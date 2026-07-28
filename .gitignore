@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.python-version
+
+# Laufzeitdaten (User-Credentials, Analyse-Historie, Logs) - nur die
+# Konfig-/Seed-JSONs in data/ gehören ins Repo, nicht die generierten Dateien.
+data/users.db
+data/sponsor_match.db
+data/feedback.jsonl
+data/security_log.jsonl

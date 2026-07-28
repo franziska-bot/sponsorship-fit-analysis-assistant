@@ -1,0 +1,44 @@
+[
+  {
+    "id": "web_search",
+    "name": "Web Search (Tavily)",
+    "enabled": true,
+    "required": true,
+    "description": "Recherchiert Companies im Web"
+  },
+  {
+    "id": "competitor_analysis",
+    "name": "Competitor Analysis",
+    "enabled": true,
+    "required": false,
+    "description": "Analysiert Konkurrenten"
+  },
+  {
+    "id": "budget_estimator",
+    "name": "Budget Estimator",
+    "enabled": false,
+    "required": false,
+    "description": "Schätzt Sponsoring-Budget"
+  },
+  {
+    "id": "case_study_db",
+    "name": "Case Study KB",
+    "enabled": true,
+    "required": true,
+    "description": "Zieht historische Cases"
+  },
+  {
+    "id": "sponsorship_db",
+    "name": "Sponsorship DB",
+    "enabled": true,
+    "required": false,
+    "description": "External Sponsorship Database"
+  },
+  {
+    "id": "company_intelligence",
+    "name": "Company Intelligence (Companies House)",
+    "enabled": true,
+    "required": false,
+    "description": "Zieht UK Company-Details von Companies House (optionaler, kostenloser API-Key)"
+  }
+]

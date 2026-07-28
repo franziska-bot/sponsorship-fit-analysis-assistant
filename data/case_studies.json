@@ -1,0 +1,38 @@
+[
+  {
+    "company": "Red Bull",
+    "sport": "Kickboxen",
+    "success": true,
+    "summary": "Red Bull sponserte den Iron Fist Kickboxing Club 2023-2024. Erfolg durch gemeinsame Lifestyle-Events und Social-Media-Synergien. Sponsoring führte zu 40% mehr Ticketverkäufen."
+  },
+  {
+    "company": "Adidas",
+    "sport": "Fußball",
+    "success": true,
+    "summary": "Adidas unterstützte einen urbanen Amateur-Fußballverein mit Trikots und einer Streetwear-Kollektion. Die Kampagne erreichte eine junge, diverse Zielgruppe und steigerte die Social-Media-Reichweite des Vereins um 60%."
+  },
+  {
+    "company": "Nike",
+    "sport": "Basketball",
+    "success": true,
+    "summary": "Nike ging eine mehrjährige Partnerschaft mit einem Community-Basketballverein ein, inklusive Ausrüstung und lokaler Jugendförderprogramme. Die Kooperation stärkte die Markenwahrnehmung als 'lokal verwurzelt' erheblich."
+  },
+  {
+    "company": "Coca-Cola",
+    "sport": "Fußball",
+    "success": false,
+    "summary": "Coca-Cola sponserte einen kleinen Fußballverein mit Fokus auf Nachhaltigkeit und Diversität. Die Partnerschaft wurde nach einem Jahr beendet, da die Markenwerte (Massenmarkt, Zucker-Kontroverse) nicht zur nachhaltigkeitsorientierten Fanbase passten."
+  },
+  {
+    "company": "Deutsche Bank",
+    "sport": "Basketball",
+    "success": false,
+    "summary": "Deutsche Bank versuchte ein Sponsoring bei einem familienorientierten Basketballverein. Die Zusammenarbeit blieb wirkungslos, da die Zielgruppen (Finanzdienstleistungen vs. Familien/Jugend) kaum Überschneidung hatten und keine gemeinsamen Aktivierungen entstanden."
+  },
+  {
+    "company": "Patagonia",
+    "sport": "Fußball",
+    "success": true,
+    "summary": "Patagonia unterstützte einen nachhaltigkeitsorientierten Fußballverein mit recycelten Trikots und gemeinsamen Umweltprojekten. Die Authentizität der Markenwerte führte zu hoher Fan-Akzeptanz und positiver Presseberichterstattung."
+  }
+]
