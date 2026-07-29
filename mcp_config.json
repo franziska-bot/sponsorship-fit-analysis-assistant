@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "sponsor-match": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/franziskahol/sponsoring-fit-analysis-assistant",
+        "run",
+        "python",
+        "mcp_server.py"
+      ]
+    }
+  }
+}

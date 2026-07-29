@@ -16,7 +16,7 @@
   {
     "id": "budget_estimator",
     "name": "Budget Estimator",
-    "enabled": false,
+    "enabled": true,
     "required": false,
     "description": "Schätzt Sponsoring-Budget"
   },
@@ -35,10 +35,10 @@
     "description": "External Sponsorship Database"
   },
   {
-    "id": "company_intelligence",
-    "name": "Company Intelligence (Companies House)",
+    "id": "size_matching",
+    "name": "Size Matching",
     "enabled": true,
     "required": false,
-    "description": "Zieht UK Company-Details von Companies House (optionaler, kostenloser API-Key)"
+    "description": "Vergleicht Club-Größe und Company-Größe (Budget/Reichweite)"
   }
 ]

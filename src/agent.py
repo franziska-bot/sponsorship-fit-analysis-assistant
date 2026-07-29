@@ -50,15 +50,18 @@ class SponsorMatchState(TypedDict):
     rejection_reason: str     # nur befüllt bei schlechtem Fit
     used_case_studies: list   # RAG-Treffer aus der Case-Study-Wissensbasis
     used_sponsorship_matches: list  # Treffer aus der externen Sponsorship-Datenbank
-    company_intelligence: dict  # Ergebnis von get_company_intelligence (OpenCorporates)
     competitor_analysis: dict  # strukturierte Konkurrentenliste + Score-/Marktsättigungs-Impact (competitor_analysis-Plugin)
     budget_estimate: str  # Ergebnis von _build_budget_estimate (budget_estimator-Plugin)
+    size_compatibility: dict  # Club-/Company-Size-Match + Score-Impact (size_matching-Plugin)
     analysis_id: int          # ID des in der SQLite-DB gespeicherten Analyse-Datensatzes
     learning_applied: bool    # True, wenn frühere Feedback-Muster den Score angepasst haben
+    is_uncertain: bool        # True, wenn fit_score im unsicheren Band 0.45-0.55 liegt (HITL-Trigger)
+    agent_confidence: int     # Agent-Confidence in %, für die Human-in-the-Loop-Anzeige
+    hitl_resolved_count: int  # Anzahl bereits per Human Review aufgelöster Entscheidungen zu dieser Firma
     token_usage: Annotated[list, operator.add]  # Tokenverbrauch pro LLM-Aufruf
 
 from langchain_openai import ChatOpenAI
-from src.tools import get_search_tool, get_company_intelligence
+from src.tools import get_search_tool
 
 @lru_cache(maxsize=None)
 def _get_llm(model: str) -> ChatOpenAI:
@@ -318,6 +321,126 @@ def _compute_portfolio_score_impact(match_percent: int, saturation_level: str) -
     saturation_penalty = {"low": 0.0, "medium": -0.03, "high": -0.08, "extreme": -0.15}[saturation_level]
     return round(max(-0.25, min(0.15, base + saturation_penalty)), 2)
 
+# --- Optionales Plugin: size_matching (Club-Größe vs. Company-Größe, sport-agnostisch) ---
+
+_SIZE_MATCH_ADJUSTMENTS = {
+    ("Small", "Small"): 0.15,
+    ("Small", "Medium"): 0.05,
+    ("Small", "Large"): -0.20,
+    ("Medium", "Small"): 0.05,
+    ("Medium", "Medium"): 0.10,
+    ("Medium", "Large"): 0.0,
+    ("Large", "Small"): -0.10,
+    ("Large", "Medium"): 0.05,
+    ("Large", "Large"): 0.05,
+    # Elite+Small/Medium waren in der Spezifikation nicht explizit vorgegeben;
+    # analog zu Large+Small (-0.10) bzw. verschärft, da Elite-Clubs eine noch
+    # größere Reichweiten-/Budget-Lücke zu kleinen/mittleren Firmen haben.
+    ("Elite", "Small"): -0.25,
+    ("Elite", "Medium"): -0.10,
+    ("Elite", "Large"): 0.10,
+}
+
+def _estimate_company_size(company_name: str, llm) -> dict:
+    """size_matching-Plugin: recherchiert generisch (für JEDE Firma, unabhängig von der
+    Branche) via Web-Suche nach Umsatz-/Reichweite-Signalen und lässt ein LLM daraus eine
+    Company-Size-Kategorie (Small/Medium/Large) ableiten. Rein heuristische KI-Schätzung,
+    keine verifizierten Finanzdaten – main.py zeigt das mit Disclaimer an."""
+    try:
+        results = get_search_tool().invoke(f"{company_name} annual revenue company size global reach")
+    except Exception:
+        results = ""
+
+    if not results:
+        return {"found": False, "size": "Medium", "token_usage": None}
+
+    snippet = str(results)[:1500]
+    prompt = (
+        f"Based on this web search about {company_name}:\n{snippet}\n\n"
+        f"Classify {company_name}'s company size into exactly one of these three "
+        f"categories, based on estimated annual revenue and market reach:\n"
+        f"SMALL: local/regional brand, revenue under 10M EUR\n"
+        f"MEDIUM: national brand, revenue 10-500M EUR\n"
+        f"LARGE: global brand, revenue over 500M EUR\n\n"
+        f"Respond in exactly this format, nothing before or after:\n"
+        f"SIZE: <Small, Medium, or Large>"
+    )
+    response = llm.invoke(prompt)
+    token_entry = _track_tokens("size_matching", response)
+
+    size = "Medium"
+    for line in response.content.split("\n"):
+        line = line.strip()
+        if line.upper().startswith("SIZE:"):
+            raw = line.split(":", 1)[1].strip().lower()
+            if raw.startswith("small"):
+                size = "Small"
+            elif raw.startswith("large"):
+                size = "Large"
+            else:
+                size = "Medium"
+            break
+
+    return {"found": True, "size": size, "token_usage": token_entry}
+
+def _compute_size_match_adjustment(club_size: str, company_size: str) -> float:
+    """Score-Anpassung basierend auf dem Größen-Match zwischen Club und Company
+    (sport-agnostisch, siehe _SIZE_MATCH_ADJUSTMENTS)."""
+    return _SIZE_MATCH_ADJUSTMENTS.get((club_size, company_size), 0.0)
+
+def _compute_size_match_percent(score_adjustment: float) -> int:
+    """Bildet die Score-Anpassung (-0.25 bis +0.15) linear auf einen 0-100%-Match-Wert
+    für die Progress-Bar-Anzeige ab."""
+    percent = (score_adjustment + 0.25) / 0.40 * 100
+    return int(round(max(0.0, min(100.0, percent))))
+
+_SIZE_EXPLANATION_TIERS = {
+    "de": {
+        "good": "{club_size} Club und {company_size} Company passen von der Größe gut zusammen.",
+        "moderate": (
+            "{club_size} Club und {company_size} Company ergeben einen moderaten Fit – "
+            "strategische Positionierung ist sinnvoll."
+        ),
+        "poor": (
+            "{club_size} Club und {company_size} Company passen von der Größe kaum zusammen – "
+            "andere Partner könnten besser passen."
+        ),
+    },
+    "en": {
+        "good": "{club_size} club and {company_size} company are a strong size match.",
+        "moderate": (
+            "{club_size} club and {company_size} company make a moderate fit – "
+            "strategic positioning is recommended."
+        ),
+        "poor": (
+            "{club_size} club and {company_size} company sizes are mismatched – "
+            "consider alternative partners."
+        ),
+    },
+    "fr": {
+        "good": "Le club {club_size} et l'entreprise {company_size} sont bien assortis en termes de taille.",
+        "moderate": (
+            "Le club {club_size} et l'entreprise {company_size} forment un fit modéré – "
+            "un positionnement stratégique est recommandé."
+        ),
+        "poor": (
+            "Les tailles du club {club_size} et de l'entreprise {company_size} ne correspondent guère – "
+            "envisagez d'autres partenaires."
+        ),
+    },
+}
+
+def _build_size_explanation(club_size: str, company_size: str, match_percent: int, language: str) -> str:
+    """Baut den erklärenden Satz zur Size Compatibility, gestuft nach Match-Prozent
+    (>70 gut, 40-70 moderat, <40 schwach) – dieselben Schwellen wie die Ampelfarben."""
+    if match_percent > 70:
+        tier = "good"
+    elif match_percent >= 40:
+        tier = "moderate"
+    else:
+        tier = "poor"
+    return _SIZE_EXPLANATION_TIERS[language][tier].format(club_size=club_size, company_size=company_size)
+
 def _build_budget_estimate(sponsorship_matches: list[dict], language: str) -> str:
     """budget_estimator-Plugin: leitet eine grobe Budget-Schätzung aus den
     investment_range-Werten passender externer Sponsorship-DB-Fälle ab.
@@ -337,44 +460,6 @@ def _build_budget_estimate(sponsorship_matches: list[dict], language: str) -> st
         "fr": "Budget de sponsoring estimé (basé sur des cas historiques similaires)",
     }[language]
     return f"{label}: {', '.join(ranges)}"
-
-def _build_company_intelligence_context(company_data: dict, company_name: str, language: str) -> str:
-    """company_intelligence-Plugin: baut den Prompt-Kontext aus den
-    Companies-House-Registrierungsdaten (oder erklärt, warum keine da sind).
-    Deckt naturgemäß nur UK-registrierte Firmen ab."""
-    if "error" in company_data:
-        return {
-            "de": f"Company-Daten: Keine Companies-House-Daten zu '{company_name}' verfügbar ({company_data['error']}).",
-            "en": f"Company data: No Companies House data available for '{company_name}' ({company_data['error']}).",
-            "fr": f"Données d'entreprise : aucune donnée Companies House disponible pour '{company_name}' ({company_data['error']}).",
-        }[language]
-
-    if language == "en":
-        return (
-            f"Company data (UK Companies House registry): '{company_data['company_name']}', "
-            f"UK company number: {company_data['company_number']}, status: {company_data['company_status']}, "
-            f"legal type: {company_data['company_type']}"
-            + (f", founded: {company_data['date_of_creation']}" if company_data.get("date_of_creation") else "")
-            + (f", address: {company_data['address']}" if company_data.get("address") else "")
-            + "."
-        )
-    if language == "fr":
-        return (
-            f"Données d'entreprise (registre UK Companies House) : '{company_data['company_name']}', "
-            f"numéro d'entreprise UK : {company_data['company_number']}, statut : {company_data['company_status']}, "
-            f"forme juridique : {company_data['company_type']}"
-            + (f", fondée en : {company_data['date_of_creation']}" if company_data.get("date_of_creation") else "")
-            + (f", adresse : {company_data['address']}" if company_data.get("address") else "")
-            + "."
-        )
-    return (
-        f"Company-Daten (UK Companies-House-Registry): '{company_data['company_name']}', "
-        f"UK-Nummer: {company_data['company_number']}, Status: {company_data['company_status']}, "
-        f"Rechtsform: {company_data['company_type']}"
-        + (f", gegründet: {company_data['date_of_creation']}" if company_data.get("date_of_creation") else "")
-        + (f", Adresse: {company_data['address']}" if company_data.get("address") else "")
-        + "."
-    )
 
 # --- Long-term memory: SQLite-Verlauf vergangener Analysen ---
 
@@ -442,7 +527,9 @@ def _init_db() -> None:
                 fit_reasoning TEXT,
                 case_studies_summary TEXT,
                 score_cached INTEGER NOT NULL DEFAULT 0,
-                user_id INTEGER
+                user_id INTEGER,
+                hitl_decision TEXT,
+                corrected_score REAL
             )
             """
         )
@@ -453,6 +540,8 @@ def _init_db() -> None:
             "ALTER TABLE analyses ADD COLUMN case_studies_summary TEXT",
             "ALTER TABLE analyses ADD COLUMN score_cached INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE analyses ADD COLUMN user_id INTEGER",
+            "ALTER TABLE analyses ADD COLUMN hitl_decision TEXT",
+            "ALTER TABLE analyses ADD COLUMN corrected_score REAL",
         ):
             try:
                 conn.execute(migration)
@@ -519,6 +608,47 @@ def update_analysis_feedback(analysis_id: int, feedback: str) -> None:
     """Trägt nachträglich das Nutzer-Feedback (positive/negative) zu einer Analyse-ID ein."""
     with _get_connection() as conn:
         conn.execute("UPDATE analyses SET feedback = ? WHERE id = ?", (feedback, analysis_id))
+
+def update_analysis_hitl_decision(analysis_id: int, decision: str) -> None:
+    """Trägt die Human-in-the-Loop-Entscheidung ('agree', 'disagree' oder 'need_more_info')
+    zu einer unsicheren Analyse (Score 0.45-0.55) nach. 'agree'/'disagree' gelten als Ground
+    Truth für künftige Score-Anpassungen bei ähnlichen Anfragen derselben Firma (siehe
+    compute_hitl_adjustment); 'need_more_info' fließt bewusst nicht ins Learning ein."""
+    with _get_connection() as conn:
+        conn.execute("UPDATE analyses SET hitl_decision = ? WHERE id = ?", (decision, analysis_id))
+
+def get_resolved_hitl_decisions(company_name: str) -> list[dict]:
+    """Holt alle bereits per Human Review aufgelösten Ground-Truth-Entscheidungen (agree/
+    disagree, NICHT need_more_info) zu ähnlichen Sponsoring-Anfragen dieser Firma."""
+    with _get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM analyses WHERE company_name LIKE ? AND hitl_decision IN ('agree', 'disagree') "
+            "ORDER BY timestamp DESC",
+            (f"%{company_name}%",),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+def update_analysis_corrected_score(analysis_id: int, corrected_score: float) -> None:
+    """Speichert eine manuelle Score-Korrektur des Users als Ground Truth für diese
+    Analyse (nach negativem Feedback). Überschreibt zusätzlich fit_score direkt auf
+    dieser Zeile, damit der bestehende Score-Cache (get_exact_previous_analysis, exakter
+    Company+Club-Match) bei der nächsten identischen Anfrage automatisch den
+    korrigierten Wert liefert – ohne eigene neue Caching-Logik."""
+    with _get_connection() as conn:
+        conn.execute(
+            "UPDATE analyses SET corrected_score = ?, fit_score = ? WHERE id = ?",
+            (corrected_score, corrected_score, analysis_id),
+        )
+
+def count_score_corrections(company_name: str, club_name: str) -> int:
+    """Zählt, wie oft der Score für exakt diese Firma+Verein-Kombination bereits manuell
+    korrigiert wurde – Grundlage für die Confidence-Anzeige nach einer Korrektur."""
+    with _get_connection() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM analyses WHERE company_name = ? AND club_name = ? "
+            "AND corrected_score IS NOT NULL",
+            (company_name, club_name),
+        ).fetchone()[0]
 
 def get_exact_previous_analysis(company_name: str, club_name: str) -> dict | None:
     """Sucht die letzte Analyse zu genau dieser Firma+Verein-Kombination (exakter
@@ -830,6 +960,33 @@ def compute_feedback_adjustment(feedback_rows: list[dict]) -> float:
     magnitude = min(0.05 + 0.01 * (abs(net) - 1), 0.10)
     return magnitude if net > 0 else -magnitude
 
+def compute_hitl_adjustment(hitl_rows: list[dict]) -> float:
+    """Berechnet die Score-Anpassung aus per Human-in-the-Loop-Review aufgelösten
+    Ground-Truth-Entscheidungen zu unsicheren Scores (0.45-0.55) derselben Firma.
+
+    'agree' bestätigt die bisherige grenzwertige Einschätzung (Score bleibt eher niedrig),
+    'disagree' korrigiert sie nach oben. Etwas stärker gewichtet als reguläres
+    Feedback (siehe compute_feedback_adjustment), da es eine explizite Human-Review-
+    Entscheidung ist statt beiläufiges Daumen-hoch/-runter.
+    """
+    agree_count = sum(1 for r in hitl_rows if r["hitl_decision"] == "agree")
+    disagree_count = sum(1 for r in hitl_rows if r["hitl_decision"] == "disagree")
+    net = disagree_count - agree_count
+    if net == 0:
+        return 0.0
+    magnitude = min(0.08 + 0.02 * (abs(net) - 1), 0.20)
+    return magnitude if net > 0 else -magnitude
+
+def compute_agent_confidence(fit_score: float, resolved_hitl_count: int) -> int:
+    """Agent-Confidence in Prozent für die Uncertainty-Anzeige bei Scores im unsicheren
+    Band (0.45-0.55): Basiswert ist der Score selbst (nahe 50% => 'unsicher'), zusätzlich
+    erhöht jede bereits per Human Review aufgelöste Entscheidung zu dieser Firma die
+    Konfidenz spürbar, da der Agent dann auf bestätigter Ground Truth statt nur der
+    eigenen Einschätzung aufbaut."""
+    base = fit_score * 100
+    boost = min(resolved_hitl_count * 27, 50)
+    return int(round(min(100, base + boost)))
+
 _FIT_SECTION_LABELS = {
     "de": {"pros": "Was passt gut", "cons": "Was passt weniger", "recommendation": "Empfehlung"},
     "en": {"pros": "What fits well", "cons": "What fits less", "recommendation": "Recommendation"},
@@ -1022,15 +1179,6 @@ def evaluate_fit(state: SponsorMatchState) -> dict:
         "sponsorship_db"
     ) else []
 
-    # Company Intelligence (Companies House, UK): läuft ebenfalls unabhängig
-    # vom Score-Cache, da für die Anzeige gebraucht. Plugin-Gating: kann im
-    # Plugin Manager abgeschaltet werden – dann entfällt der externe API-Call.
-    company_intelligence = (
-        get_company_intelligence.invoke(company_name)
-        if is_plugin_enabled("company_intelligence")
-        else {"error": "Company Intelligence Plugin deaktiviert"}
-    )
-
     # Score-Konsistenz: exakt gleiche Firma+Verein-Kombination schon einmal
     # analysiert? Dann Score cachen statt neu (und ggf. anders) zu berechnen.
     cached = get_exact_previous_analysis(company_name, club["name"])
@@ -1060,6 +1208,34 @@ def evaluate_fit(state: SponsorMatchState) -> dict:
         _build_budget_estimate(sponsorship_matches, language) if is_plugin_enabled("budget_estimator") else ""
     )
 
+    # Human-in-the-Loop: bereits per Human Review aufgelöste Ground-Truth-Entscheidungen
+    # zu dieser Firma holen (unabhängig vom Score-Cache-Zweig, wird für die
+    # Agent-Confidence-Anzeige unten in jedem Fall gebraucht).
+    resolved_hitl_rows = get_resolved_hitl_decisions(company_name)
+
+    # size_matching-Plugin: Club-Größe ist ein statisches Feld im Vereinsprofil (sport-
+    # agnostisch, siehe clubs.json), Company-Größe wird generisch für JEDE Firma per
+    # Web-Suche + LLM geschätzt. Läuft unabhängig vom Score-Cache-Zweig, da für die
+    # eigene UI-Sektion (main.py) gebraucht.
+    club_size = club.get("size", "Medium")
+    if is_plugin_enabled("size_matching"):
+        company_size_result = _estimate_company_size(company_name, llm)
+        if company_size_result.get("token_usage"):
+            token_usage.append(company_size_result["token_usage"])
+    else:
+        company_size_result = {"found": False, "size": "Medium"}
+
+    size_adjustment = _compute_size_match_adjustment(club_size, company_size_result["size"])
+    size_match_percent = _compute_size_match_percent(size_adjustment)
+    size_compatibility = {
+        "found": company_size_result["found"],
+        "club_size": club_size,
+        "company_size": company_size_result["size"],
+        "match_percent": size_match_percent,
+        "score_adjustment": size_adjustment,
+        "explanation": _build_size_explanation(club_size, company_size_result["size"], size_match_percent, language),
+    }
+
     if cached is not None:
         score = cached["fit_score"]
         reasoning = _strip_legacy_score_notes((cached.get("fit_reasoning") or "").strip())
@@ -1069,6 +1245,8 @@ def evaluate_fit(state: SponsorMatchState) -> dict:
         # der gleichen Anfrage weiter verschieben).
         portfolio["score_before_adjustment"] = score
         portfolio["score_after_adjustment"] = score
+        size_compatibility["score_before_adjustment"] = score
+        size_compatibility["score_after_adjustment"] = score
     else:
         rag_context = _build_rag_context(case_studies, company_name, club["sport"], language)
         sponsorship_context = _build_sponsorship_context(sponsorship_matches, language)
@@ -1098,10 +1276,6 @@ def evaluate_fit(state: SponsorMatchState) -> dict:
             )
         if budget_estimate_text:
             memory_context += "\n\n" + budget_estimate_text
-        if is_plugin_enabled("company_intelligence"):
-            memory_context += "\n\n" + _build_company_intelligence_context(
-                company_intelligence, company_name, language
-            )
 
         if language == "en":
             prompt = (
@@ -1217,6 +1391,34 @@ def evaluate_fit(state: SponsorMatchState) -> dict:
             score = max(0.0, min(1.0, score + portfolio_adjustment))
         portfolio["score_after_adjustment"] = score
 
+        # Human-in-the-Loop: bei unsicheren Scores (0.45-0.55) fließen bereits vom Menschen
+        # aufgelöste Agree/Disagree-Entscheidungen zu ähnlichen Anfragen dieser Firma als
+        # Ground Truth in den Score ein (siehe compute_hitl_adjustment). Wie beim Score-
+        # Cache bewusst NICHT im cached-Zweig angewendet, damit ein gecachter Score stabil
+        # bleibt statt sich bei jeder Wiederholung weiter zu verschieben.
+        if 0.45 <= round(score, 2) <= 0.55 and resolved_hitl_rows:
+            hitl_adjustment = compute_hitl_adjustment(resolved_hitl_rows)
+            if hitl_adjustment != 0.0:
+                score = max(0.0, min(1.0, score + hitl_adjustment))
+
+        # Size Compatibility: Score zusätzlich anpassen, abhängig vom Größen-Match
+        # zwischen Club und Company (sport-agnostisch, siehe _compute_size_match_adjustment).
+        size_compatibility["score_before_adjustment"] = score
+        if size_adjustment != 0.0:
+            score = max(0.0, min(1.0, score + size_adjustment))
+        size_compatibility["score_after_adjustment"] = score
+
+    # round(): die Summe mehrerer Score-Anpassungen (z.B. 0.5 - 0.05) erzeugt gelegentlich
+    # Gleitkomma-Artefakte wie 0.44999999999999996 statt exakt 0.45 – ohne Rundung würde
+    # ein für den User sichtbarer Score von "0.45" fälschlich NICHT als unsicher gelten
+    # (HITL-Review würde dann nicht auslösen, obwohl die Anzeige "0.45" zeigt).
+    score = round(score, 2)
+
+    # Human-in-the-Loop-Anzeige: unsicher, wenn der finale Score im Grenzband liegt;
+    # Agent-Confidence berücksichtigt bereits vorhandene Human-Review-Ground-Truth.
+    is_uncertain = 0.45 <= score <= 0.55
+    agent_confidence = compute_agent_confidence(score, len(resolved_hitl_rows))
+
     # Long-term memory: neue Analyse speichern (Feedback wird später per Update nachgetragen)
     analysis_id = save_analysis(
         club_name=club["name"],
@@ -1237,11 +1439,14 @@ def evaluate_fit(state: SponsorMatchState) -> dict:
         "fit_reasoning": reasoning,
         "used_case_studies": case_studies,
         "used_sponsorship_matches": sponsorship_matches,
-        "company_intelligence": company_intelligence,
         "competitor_analysis": portfolio,
         "budget_estimate": budget_estimate_text,
+        "size_compatibility": size_compatibility,
         "analysis_id": analysis_id,
         "learning_applied": learning_applied,
+        "is_uncertain": is_uncertain,
+        "agent_confidence": agent_confidence,
+        "hitl_resolved_count": len(resolved_hitl_rows),
         "token_usage": token_usage,
     }
 
@@ -1506,9 +1711,12 @@ if __name__ == "__main__":
         "rejection_reason": "",
         "used_case_studies": [],
         "used_sponsorship_matches": [],
-        "company_intelligence": {},
+        "size_compatibility": {},
         "analysis_id": 0,
         "learning_applied": False,
+        "is_uncertain": False,
+        "agent_confidence": 0,
+        "hitl_resolved_count": 0,
         "token_usage": [],
     })
 

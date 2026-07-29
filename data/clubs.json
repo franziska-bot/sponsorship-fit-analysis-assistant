@@ -4,20 +4,23 @@
     "sport": "Fußball",
     "fanbase": "Jung, urban, sozial engagiert",
     "values": "Nachhaltigkeit, Social Media Präsenz, Diversität",
-    "sponsorship_gaps": "Lifestyle- und Streetwear-Marken, nachhaltige Produkte"
+    "sponsorship_gaps": "Lifestyle- und Streetwear-Marken, nachhaltige Produkte",
+    "size": "Medium"
   },
   "riverside_hawks": {
     "name": "Riverside Hawks",
     "sport": "Basketball",
     "fanbase": "Familienorientiert, lokal verwurzelt",
     "values": "Community-Engagement, lokale Verbundenheit, Bildung",
-    "sponsorship_gaps": "Lokales Gewerbe, Bildungsanbieter, Familienprodukte"
+    "sponsorship_gaps": "Lokales Gewerbe, Bildungsanbieter, Familienprodukte",
+    "size": "Medium"
   },
   "iron_fist_kickboxing": {
     "name": "Iron Fist Kickboxing Club",
     "sport": "Kickboxen",
     "fanbase": "Leistungsorientiert, disziplinfokussiert, wachsender Frauenanteil",
     "values": "Disziplin, körperliche Leistungsfähigkeit, mentale Stärke",
-    "sponsorship_gaps": "Sportnahrung/Supplements, Sportbekleidung, Fitness-Ausrüstung, Reha/Gesundheit"
+    "sponsorship_gaps": "Sportnahrung/Supplements, Sportbekleidung, Fitness-Ausrüstung, Reha/Gesundheit",
+    "size": "Medium"
   }
 }

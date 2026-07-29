@@ -13,6 +13,11 @@ from src.agent import (
     get_langsmith_trace_url,
     get_analysis_history,
     update_analysis_feedback,
+    update_analysis_hitl_decision,
+    get_resolved_hitl_decisions,
+    update_analysis_corrected_score,
+    count_score_corrections,
+    compute_agent_confidence,
     get_feedback_confidence,
     evaluate_with_ragas,
     get_score_consistency,
@@ -140,39 +145,179 @@ FEEDBACK_FILE = "data/feedback.jsonl"
 
 st.set_page_config(page_title="Sponsor Match", initial_sidebar_state="expanded")
 
-# Minimales CSS statt vieler einzelner Inline-Styles: eine Handvoll globaler
-# Regeln, die über data-testid/st-key-Selektoren ALLE Karten/Buttons auf
-# einmal stylen, statt pro Widget eigenes Markup zu brauchen. Karten nutzen
-# st.container(key="card_...", border=True) – der Rahmen/die Rundung kommt
-# nativ von Streamlit, hier wird nur der dezente graue Hintergrund ergänzt.
+# Apple-Style-Redesign: minimalistisch, Graustufen + 1 Akzentfarbe (Blau), dünne
+# Borders statt Schatten, großzügiger Abstand, dezente Hover-Transitions (0.15-0.3s).
+# Karten nutzen st.container(key="card_...", border=True) – Rahmen/Rundung kommen
+# nativ von Streamlit, hier werden Hintergrund/Border/Spacing/Hover ergänzt.
 CUSTOM_CSS = """
 <style>
-div[class*="st-key-card_"] {
-    background: #2B2B2B;
-    color: #FAFAFA;
-    border-radius: 12px;
-    padding: 1.4rem 1.6rem;
-    margin-bottom: 1.25rem;
+/* Bewusst NUR auf html/body statt breiter [data-testid]-Selektoren: eine zu
+   breite Regel würde auch Streamlits eigene Icon-Font-Elemente
+   (data-testid="stIconMaterial", Material Symbols für Chevrons/Icons)
+   überschreiben und deren Font-Fallback-Rendering durcheinanderbringen. */
+html, body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
+
+/* Page Heading (st.title) + eigene Subheading-Klasse (st.caption direkt danach
+   wird bewusst NICHT global mitgestylt, da dieselbe Caption-Komponente auch für
+   alle Card-Subheadings/Disclaimer verwendet wird – siehe .sm-page-subheading). */
+[data-testid="stAppViewContainer"] h1 {
+    font-size: 40px !important;
+    font-weight: 700 !important;
+    color: rgb(255, 255, 255) !important;
+}
+.sm-page-subheading {
+    font-size: 16px;
+    font-weight: 400;
+    color: rgb(140, 140, 140);
+    margin: -8px 0 8px 0;
+}
+
+/* Card-Subheadings/Disclaimer (st.caption innerhalb von Cards) */
+[data-testid="stCaptionContainer"] {
+    font-size: 12px !important;
+    color: rgb(120, 120, 120) !important;
+}
+
+/* Fließtext innerhalb von Cards (st.write) */
+[data-testid="stMarkdownContainer"] p {
+    font-size: 15px;
+    color: rgb(180, 180, 180);
+    line-height: 1.8;
+}
+
+/* Karten: dünner Rahmen, kein Schatten, großzügiger Abstand, dezenter Hover */
+div[class*="st-key-card_"] {
+    background: rgb(20, 20, 20);
+    color: rgb(200, 200, 200);
+    border: 0.5px solid rgb(50, 50, 50);
+    border-radius: 12px;
+    padding: 32px;
+    margin-bottom: 24px;
+    box-shadow: none;
+    transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out;
+}
+div[class*="st-key-card_"]:hover {
+    background: rgb(25, 25, 25);
+    border-color: rgb(70, 70, 70);
+}
+/* Card-Titel (Expander-Summary-Text) – bewusst nur im Main Content, NICHT in der
+   Sidebar (dort sollen Settings/Plugins/Hilfe wie normale Zeilen wirken, nicht wie
+   fette Card-Überschriften). */
+[data-testid="stAppViewContainer"] [data-testid="stExpander"] summary p {
+    font-size: 16px !important;
+    font-weight: 700 !important;
+    color: rgb(255, 255, 255) !important;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary p {
+    font-size: 14px !important;
+    font-weight: 400 !important;
+    color: rgb(200, 200, 200) !important;
+}
+/* Card-Titel für Karten OHNE Expander/Dropdown (immer offen, z.B. Feedback,
+   Quick Links) – gleiche Optik wie die Expander-Summary-Card-Titel oben. */
+.sm-card-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: rgb(255, 255, 255);
+    margin-bottom: 12px;
+}
+
+/* Buttons: flach statt Lift+Schatten-Hover, unterschieden nach Streamlits
+   eigenem primary/secondary "kind"-Attribut (type="primary" in Python). */
 [data-testid="stButton"] button,
 [data-testid="stDownloadButton"] button,
 [data-testid="stFormSubmitButton"] button {
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+    box-shadow: none !important;
+    transform: none !important;
+    transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out !important;
 }
-[data-testid="stButton"] button:hover,
-[data-testid="stDownloadButton"] button:hover,
-[data-testid="stFormSubmitButton"] button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+/* Primary: gefüllter Akzent-Button (Analyse starten, Login, Score speichern) */
+[data-testid="stButton"] button[kind="primary"],
+[data-testid="stDownloadButton"] button[kind="primary"],
+[data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"] {
+    background-color: rgb(0, 120, 215) !important;
+    color: #FFFFFF !important;
+    border: none !important;
 }
+[data-testid="stButton"] button[kind="primary"]:hover,
+[data-testid="stDownloadButton"] button[kind="primary"]:hover,
+[data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"]:hover {
+    background-color: rgb(0, 100, 190) !important;
+}
+[data-testid="stButton"] button[kind="primary"]:active,
+[data-testid="stDownloadButton"] button[kind="primary"]:active,
+[data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"]:active {
+    background-color: rgb(0, 80, 165) !important;
+}
+/* Secondary: transparenter Button mit dünnem Rahmen (Feedback, HITL, Mehr/Weniger,
+   Chat löschen etc. – alles ohne explizites type="primary") */
+[data-testid="stButton"] button[kind="secondary"],
+[data-testid="stDownloadButton"] button[kind="secondary"],
+[data-testid="stFormSubmitButton"] button[kind="secondaryFormSubmit"] {
+    background-color: transparent !important;
+    color: rgb(0, 120, 215) !important;
+    border: 0.5px solid rgb(50, 50, 50) !important;
+}
+[data-testid="stButton"] button[kind="secondary"]:hover,
+[data-testid="stDownloadButton"] button[kind="secondary"]:hover,
+[data-testid="stFormSubmitButton"] button[kind="secondaryFormSubmit"]:hover {
+    background-color: rgba(0, 120, 215, 0.08) !important;
+    border-color: rgb(70, 70, 70) !important;
+}
+[data-testid="stButton"] button:disabled,
+[data-testid="stFormSubmitButton"] button:disabled {
+    background-color: rgba(200, 200, 200, 0.15) !important;
+    color: rgba(200, 200, 200, 0.5) !important;
+    border-color: rgb(50, 50, 50) !important;
+}
+
+/* Inputs/Selects: dunkler Hintergrund, dünner Rahmen, Fokus in der Akzentfarbe */
+input, textarea,
+[data-baseweb="select"] > div {
+    background-color: rgb(30, 30, 30) !important;
+    border: 0.5px solid rgb(50, 50, 50) !important;
+    border-radius: 8px !important;
+    color: rgb(200, 200, 200) !important;
+    transition: border-color 0.1s ease-in-out !important;
+}
+input:focus, textarea:focus {
+    border: 1.5px solid rgb(0, 120, 215) !important;
+    outline: none !important;
+}
+
+/* Sidebar: feste Breite, eigener (noch dunklerer) Hintergrund, dünner Rahmen rechts */
+[data-testid="stSidebar"] {
+    width: 280px !important;
+    min-width: 280px !important;
+    background-color: rgb(15, 15, 15) !important;
+    border-right: 0.5px solid rgb(50, 50, 50);
+}
+[data-testid="stSidebar"] > div {
+    padding: 40px 24px;
+}
+
+/* Sidebar-Gruppenlabels: kleine graue Caps-Überschrift je Sektion */
 .sm-sidebar-group-label {
     font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
+    font-weight: 700;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: #AAAAAA;
+    color: rgb(140, 140, 140);
     margin: 0.2rem 0 0.4rem 0;
 }
+
+/* Expander-Header: dezenter Hover in der Akzentfarbe (Annäherung an die
+   gewünschte Chevron-Hover-Farbe – native Rotation/Animation ist über
+   Streamlits eingebauten Expander nicht ansteuerbar). */
+[data-testid="stExpander"] summary:hover p {
+    color: rgb(0, 120, 215) !important;
+}
+
 /* Required-Plugin-Toggles sind absichtlich nicht klickbar (disabled=True), zeigen
    aber standardmäßig einen "not-allowed"-Cursor (Verbotssymbol) an. Rein visuell
    auf einen neutralen Cursor zurücksetzen – Toggle bleibt weiterhin deaktiviert. */
@@ -182,13 +327,29 @@ div[class*="st-key-plugin_toggle_"] label[data-disabled="true"] {
 /* Streamlits Default-Styling für deaktivierte, aber aktive (checked) Toggles nutzt
    ein halbtransparentes Weiß (rgba(250,250,250,0.2)) für die Schiene und einen sehr
    dunklen Knopf – im Dark Theme dadurch praktisch unsichtbar, Required-Plugins wirken
-   fälschlich "aus". Rein visuell auf die gleiche rote "An"-Farbe wie bei normalen
+   fälschlich "aus". Rein visuell auf die gleiche Akzentfarbe wie bei normalen
    Toggles zurücksetzen; der Toggle bleibt weiterhin nicht klickbar (disabled=True).*/
 div[class*="st-key-plugin_toggle_"] label[data-disabled="true"][data-selected="true"] > div:first-of-type {
-    background-color: rgba(255, 75, 75, 0.7) !important;
+    background-color: rgba(0, 120, 215, 0.7) !important;
 }
 div[class*="st-key-plugin_toggle_"] label[data-disabled="true"][data-selected="true"] > div:first-of-type > div {
     background-color: #FAFAFA !important;
+}
+
+/* Responsive: Sidebar wird auf schmalen Viewports zum Drawer (Streamlits
+   eingebautes Verhalten: Sidebar klappt automatisch ein/aus über den
+   Collapse-Pfeil), Main Content bekommt volle Breite; hier zusätzlich
+   kompakteres Card-Spacing auf Tablet/Mobile. */
+@media (max-width: 1024px) {
+    div[class*="st-key-card_"] {
+        padding: 20px;
+    }
+}
+@media (max-width: 768px) {
+    div[class*="st-key-card_"] {
+        padding: 16px;
+        margin-bottom: 16px;
+    }
 }
 </style>
 """
@@ -197,6 +358,12 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 def sidebar_group_label(text: str) -> None:
     st.markdown(f'<p class="sm-sidebar-group-label">{text}</p>', unsafe_allow_html=True)
+
+
+def render_card_title(text: str) -> None:
+    """Card-Titel ohne Expander/Dropdown (für Karten, die immer offen sein sollen,
+    z.B. Feedback und Quick Links) – gleiche Optik wie die Expander-Summary-Titel."""
+    st.markdown(f'<div class="sm-card-title">{text}</div>', unsafe_allow_html=True)
 
 
 def render_help_popover(help_text: str) -> None:
@@ -329,15 +496,6 @@ LABELS = {
         "research_help": "Web-Recherche zum Unternehmen – Branche, Zielgruppe, Markenwerte.",
         "research_more_btn": "Mehr anzeigen",
         "research_less_btn": "Weniger anzeigen",
-        "company_intel_header": "Company Intelligence (via Companies House API)",
-        "company_intel_help": "Offizielle Firmendaten von Companies House (nur UK-Firmen).",
-        "company_intel_disclaimer": "Deckt nur UK-registrierte Firmen ab (Datenquelle: UK Companies House).",
-        "company_intel_none": "{message}",
-        "company_intel_number": "Company Number",
-        "company_intel_status": "Status",
-        "company_intel_founded": "Founded",
-        "company_intel_address": "Address",
-        "company_intel_type": "Company Type",
         "competitor_analysis_header": "Konkurrenzanalyse",
         "competitor_analysis_help": "Analysiert das bestehende Sponsoring-Portfolio DIESER Firma (nicht ihrer Konkurrenten) und den Zielgruppen-Fit zum Verein – generisch für jede Firma, fließt in die Fit-Bewertung ein.",
         "competitor_analysis_none": "Keine Konkurrenzanalyse verfügbar (Plugin war deaktiviert oder keine Web-Daten gefunden).",
@@ -366,6 +524,14 @@ LABELS = {
         "market_saturation_interpretation_medium": "Mäßig saturiert – noch Raum für weitere Sponsorings.",
         "market_saturation_interpretation_high": "Hoch saturiert – wenig Platz für weitere Sponsorings in dieser Sportart.",
         "market_saturation_interpretation_extreme": "Extrem saturiert – Firma ist bereits stark in dieser Sportart engagiert.",
+        "size_compatibility_header": "Size Compatibility",
+        "size_compatibility_help": "Vergleicht Budget/Reichweite von Club und Company (Small/Medium/Large/Elite).",
+        "size_compatibility_disclaimer": "KI-geschätzte Company-Größe (Web-Suche + LLM-Interpretation) – keine verifizierten Finanzdaten.",
+        "size_compatibility_none": "Keine Size-Compatibility-Analyse verfügbar (Plugin war deaktiviert).",
+        "club_size_label": "Club Size",
+        "company_size_label": "Company Size",
+        "match_score_label": "Match Score",
+        "size_compatibility_impact": "Score angepasst von {before:.2f} → {after:.2f}: {club_size}-Club + {company_size}-Company = {match_percent}% Size Match.",
         "case_studies_header": "Relevante Case-Studies aus KB",
         "case_studies_help": "Ähnliche, frühere Sponsoring-Fälle aus der Wissensdatenbank zum Vergleich.",
         "case_studies_disclaimer": "Fiktive Beispieldaten zu Demozwecken – keine realen Sponsoring-Fälle.",
@@ -387,6 +553,9 @@ LABELS = {
         "fit_header": "Fit-Bewertung",
         "fit_help": "Bewertet, wie gut Firma und Verein zusammenpassen (Score 0–1) mit Begründung.",
         "score_label": "Score",
+        "fit_status_good": "Guter Fit",
+        "fit_status_moderate": "Moderater Fit",
+        "fit_status_poor": "Schlechter Fit",
         "outreach_header": "Entwurf: Erstansprache",
         "outreach_help": "Vom Agenten formulierter Vorschlag für die erste Kontaktaufnahme.",
         "rejection_header": "Ablehnung",
@@ -399,11 +568,26 @@ LABELS = {
         "model_caption": "Modell: {model}",
         "feedback_question": "War diese Analyse hilfreich?",
         "feedback_question_help": "Agent lernt aus deinem Feedback und verbessert sich.",
-        "feedback_positive_btn": "Guter Fit - Agent hat gut bewertet",
-        "feedback_negative_btn": "Nicht hilfreich - Agent hat falsch bewertet",
+        "feedback_positive_btn": "Ja",
+        "feedback_negative_btn": "Nein",
         "feedback_thanks_positive": "Dank für Feedback! Agent lernt und wird besser.",
         "feedback_thanks_negative": "Dank für Feedback! Agent passt sich an.",
+        "score_correction_header": "Korrigiere den Score",
+        "score_correction_prompt": "Was ist der richtige Score?",
+        "score_correction_save_btn": "Score speichern & Agent trainieren",
+        "score_correction_thanks": "Danke! Agent hat gelernt: {company} + {club} = {score:.2f}",
+        "score_correction_confidence_improved": "Agent-Confidence verbessert: {before}% → {after}% basierend auf deinem Feedback.",
         "learning_badge": "Agent lernt aus Feedback",
+        "hitl_header": "Human Review (unsicherer Score)",
+        "hitl_uncertain_warning": "Unsicherer Score – Agent-Confidence: {confidence}%. Bitte manuell prüfen.",
+        "hitl_review_prompt": "Bitte überprüfe diese unsichere Bewertung:",
+        "hitl_agree_btn": "Zustimmen",
+        "hitl_disagree_btn": "Widersprechen",
+        "hitl_more_info_btn": "Mehr Informationen nötig",
+        "hitl_decision_recorded": "Deine Entscheidung wurde gespeichert.",
+        "hitl_confidence_improved": "Confidence stieg von {before}% → {after}% nach Feedback.",
+        "hitl_learned_count": "Agent hat {count}x aus deinem Feedback zu dieser Firma gelernt.",
+        "hitl_more_info_recorded": "Als 'weitere Informationen nötig' markiert – fließt nicht ins Score-Learning ein.",
         "trace_header": "Agent Trace & Debugging",
         "trace_none": "Kein Trace verfügbar – LangSmith-Tracing lief für diesen Lauf nicht mit.",
         "trace_link": "LangSmith Trace ansehen",
@@ -500,15 +684,6 @@ LABELS = {
         "research_help": "Web research on the company – industry, target audience, brand values.",
         "research_more_btn": "Show more",
         "research_less_btn": "Show less",
-        "company_intel_header": "Company Intelligence (via Companies House API)",
-        "company_intel_help": "Official company data from Companies House (UK companies only).",
-        "company_intel_disclaimer": "Covers UK-registered companies only (data source: UK Companies House).",
-        "company_intel_none": "{message}",
-        "company_intel_number": "Company Number",
-        "company_intel_status": "Status",
-        "company_intel_founded": "Founded",
-        "company_intel_address": "Address",
-        "company_intel_type": "Company Type",
         "competitor_analysis_header": "Competitor Analysis",
         "competitor_analysis_help": "Analyzes this company's OWN existing sponsorship portfolio (not its competitors') and its audience fit with the club – generic for any company, factored into the fit evaluation.",
         "competitor_analysis_none": "No competitor analysis available (plugin was disabled or no web data found).",
@@ -537,6 +712,14 @@ LABELS = {
         "market_saturation_interpretation_medium": "Moderately saturated – still room for more sponsorships.",
         "market_saturation_interpretation_high": "Highly saturated – little room for further sponsorships in this sport.",
         "market_saturation_interpretation_extreme": "Extremely saturated – company is already heavily engaged in this sport.",
+        "size_compatibility_header": "Size Compatibility",
+        "size_compatibility_help": "Compares budget/reach of club and company (Small/Medium/Large/Elite).",
+        "size_compatibility_disclaimer": "AI-estimated company size (web search + LLM interpretation) – not verified financial data.",
+        "size_compatibility_none": "No size compatibility analysis available (plugin was disabled).",
+        "club_size_label": "Club Size",
+        "company_size_label": "Company Size",
+        "match_score_label": "Match Score",
+        "size_compatibility_impact": "Score adjusted from {before:.2f} → {after:.2f}: {club_size} club + {company_size} company = {match_percent}% size match.",
         "case_studies_header": "Relevant Case Studies from KB",
         "case_studies_help": "Similar past sponsorship cases from the knowledge base for comparison.",
         "case_studies_disclaimer": "Fictional sample data for demo purposes – not real sponsorship cases.",
@@ -558,6 +741,9 @@ LABELS = {
         "fit_header": "Fit Evaluation",
         "fit_help": "Rates how well company and club match (score 0–1) with reasoning.",
         "score_label": "Score",
+        "fit_status_good": "Good Fit",
+        "fit_status_moderate": "Moderate Fit",
+        "fit_status_poor": "Poor Fit",
         "outreach_header": "Draft: Initial Outreach",
         "outreach_help": "Agent-drafted suggestion for the initial outreach message.",
         "rejection_header": "Rejection",
@@ -570,11 +756,26 @@ LABELS = {
         "model_caption": "Model: {model}",
         "feedback_question": "Was this analysis helpful?",
         "feedback_question_help": "The agent learns from your feedback and improves.",
-        "feedback_positive_btn": "Good Fit - Agent evaluated well",
-        "feedback_negative_btn": "Not helpful - Agent evaluated incorrectly",
+        "feedback_positive_btn": "Yes",
+        "feedback_negative_btn": "No",
         "feedback_thanks_positive": "Thanks for the feedback! The agent is learning and improving.",
         "feedback_thanks_negative": "Thanks for the feedback! The agent is adapting.",
+        "score_correction_header": "Correct the Score",
+        "score_correction_prompt": "What is the correct score?",
+        "score_correction_save_btn": "Save Score & Train Agent",
+        "score_correction_thanks": "Thanks! Agent has learned: {company} + {club} = {score:.2f}",
+        "score_correction_confidence_improved": "Agent Confidence improved: {before}% → {after}% based on your feedback.",
         "learning_badge": "Agent learns from feedback",
+        "hitl_header": "Human Review (uncertain score)",
+        "hitl_uncertain_warning": "Uncertain score – Agent Confidence: {confidence}%. Please review manually.",
+        "hitl_review_prompt": "Please review this uncertain assessment:",
+        "hitl_agree_btn": "Agree",
+        "hitl_disagree_btn": "Disagree",
+        "hitl_more_info_btn": "Need More Info",
+        "hitl_decision_recorded": "Your decision has been recorded.",
+        "hitl_confidence_improved": "Confidence rose from {before}% → {after}% after feedback.",
+        "hitl_learned_count": "Agent has learned {count}x from your feedback on this company.",
+        "hitl_more_info_recorded": "Marked as 'needs more info' – does not affect score learning.",
         "trace_header": "Agent Trace & Debugging",
         "trace_none": "No trace available – LangSmith tracing did not run for this analysis.",
         "trace_link": "View LangSmith Trace",
@@ -671,15 +872,6 @@ LABELS = {
         "research_help": "Recherche web sur l'entreprise – secteur, public cible, valeurs de marque.",
         "research_more_btn": "Afficher plus",
         "research_less_btn": "Afficher moins",
-        "company_intel_header": "Company Intelligence (via l'API Companies House)",
-        "company_intel_help": "Données officielles de l'entreprise via Companies House (entreprises UK uniquement).",
-        "company_intel_disclaimer": "Couvre uniquement les entreprises enregistrées au Royaume-Uni (source : UK Companies House).",
-        "company_intel_none": "{message}",
-        "company_intel_number": "Numéro d'entreprise",
-        "company_intel_status": "Statut",
-        "company_intel_founded": "Fondée en",
-        "company_intel_address": "Adresse",
-        "company_intel_type": "Forme juridique",
         "competitor_analysis_header": "Analyse de la concurrence",
         "competitor_analysis_help": "Analyse le portefeuille de sponsoring existant DE CETTE entreprise (pas de ses concurrents) et l'adéquation d'audience avec le club – générique pour toute entreprise, pris en compte dans l'évaluation du fit.",
         "competitor_analysis_none": "Aucune analyse de la concurrence disponible (plugin désactivé ou aucune donnée web trouvée).",
@@ -708,6 +900,14 @@ LABELS = {
         "market_saturation_interpretation_medium": "Saturation modérée – encore de la place pour d'autres sponsorings.",
         "market_saturation_interpretation_high": "Forte saturation – peu de place pour d'autres sponsorings dans ce sport.",
         "market_saturation_interpretation_extreme": "Saturation extrême – l'entreprise est déjà fortement engagée dans ce sport.",
+        "size_compatibility_header": "Size Compatibility",
+        "size_compatibility_help": "Compare le budget/la portée du club et de l'entreprise (Small/Medium/Large/Elite).",
+        "size_compatibility_disclaimer": "Taille d'entreprise estimée par IA (recherche web + interprétation LLM) – données financières non vérifiées.",
+        "size_compatibility_none": "Aucune analyse de compatibilité de taille disponible (plugin désactivé).",
+        "club_size_label": "Taille du club",
+        "company_size_label": "Taille de l'entreprise",
+        "match_score_label": "Score de correspondance",
+        "size_compatibility_impact": "Score ajusté de {before:.2f} → {after:.2f} : club {club_size} + entreprise {company_size} = {match_percent} % de correspondance de taille.",
         "case_studies_header": "Études de cas pertinentes (base de connaissances)",
         "case_studies_help": "Cas de sponsoring similaires issus de la base de connaissances, à titre de comparaison.",
         "case_studies_disclaimer": "Données fictives à des fins de démonstration – pas de cas de sponsoring réels.",
@@ -729,6 +929,9 @@ LABELS = {
         "fit_header": "Évaluation du fit",
         "fit_help": "Évalue à quel point l'entreprise et le club correspondent (score 0–1) avec justification.",
         "score_label": "Score",
+        "fit_status_good": "Bonne adéquation",
+        "fit_status_moderate": "Adéquation modérée",
+        "fit_status_poor": "Adéquation faible",
         "outreach_header": "Brouillon : prise de contact initiale",
         "outreach_help": "Proposition rédigée par l'agent pour le premier message de prise de contact.",
         "rejection_header": "Rejet",
@@ -741,11 +944,26 @@ LABELS = {
         "model_caption": "Modèle : {model}",
         "feedback_question": "Cette analyse vous a-t-elle été utile ?",
         "feedback_question_help": "L'agent apprend de votre feedback et s'améliore.",
-        "feedback_positive_btn": "Bon fit - L'agent a bien évalué",
-        "feedback_negative_btn": "Pas utile - L'agent s'est trompé",
+        "feedback_positive_btn": "Oui",
+        "feedback_negative_btn": "Non",
         "feedback_thanks_positive": "Merci pour votre retour ! L'agent apprend et s'améliore.",
         "feedback_thanks_negative": "Merci pour votre retour ! L'agent s'adapte.",
+        "score_correction_header": "Corriger le score",
+        "score_correction_prompt": "Quel est le score correct ?",
+        "score_correction_save_btn": "Enregistrer le score et entraîner l'agent",
+        "score_correction_thanks": "Merci ! L'agent a appris : {company} + {club} = {score:.2f}",
+        "score_correction_confidence_improved": "Confiance de l'agent améliorée : {before} % → {after} % grâce à votre feedback.",
         "learning_badge": "L'agent apprend du feedback",
+        "hitl_header": "Vérification humaine (score incertain)",
+        "hitl_uncertain_warning": "Score incertain – Confiance de l'agent : {confidence} %. Veuillez vérifier manuellement.",
+        "hitl_review_prompt": "Veuillez vérifier cette évaluation incertaine :",
+        "hitl_agree_btn": "D'accord",
+        "hitl_disagree_btn": "Pas d'accord",
+        "hitl_more_info_btn": "Plus d'informations nécessaires",
+        "hitl_decision_recorded": "Votre décision a été enregistrée.",
+        "hitl_confidence_improved": "La confiance est passée de {before} % à {after} % après feedback.",
+        "hitl_learned_count": "L'agent a appris {count}x de votre feedback sur cette entreprise.",
+        "hitl_more_info_recorded": "Marqué comme « plus d'informations nécessaires » – n'affecte pas l'apprentissage du score.",
         "trace_header": "Trace de l'agent & débogage",
         "trace_none": "Aucune trace disponible – le tracing LangSmith n'a pas fonctionné pour cette analyse.",
         "trace_link": "Voir la trace LangSmith",
@@ -1064,9 +1282,8 @@ with st.sidebar:
         LANGUAGE_MAP.get(st.session_state.get("ui_language_select", "Deutsch"), "de")
     ]
     sidebar_group_label(_lang_probe["sidebar_group_account"])
-    logout_col1, logout_col2 = st.columns([3, 1])
-    logout_col1.markdown(f"{_lang_probe['logged_in_as']} **{st.session_state['user']}**")
-    if logout_col2.button(_lang_probe["logout_button"], key="logout_button"):
+    st.markdown(f"{_lang_probe['logged_in_as']} **{st.session_state['user']}**")
+    if st.button(_lang_probe["logout_button"], key="logout_button", use_container_width=True):
         for _key in ("user", "user_id", "last_activity"):
             st.session_state.pop(_key, None)
         st.rerun()
@@ -1106,9 +1323,9 @@ with st.sidebar:
         st.caption(labels["plugin_manager_info"])
         plugins = load_plugins()
         # st.session_state["enabled_plugins"] ist die Quelle der Wahrheit für die
-        # Chat-Result-Anzeige weiter unten – so verschwindet z.B. die Company-
-        # Intelligence-Sektion sofort, wenn das Plugin ausgeschaltet wird, ohne
-        # dass die Analyse neu laufen muss.
+        # Chat-Result-Anzeige weiter unten – so verschwindet z.B. eine Ergebnis-
+        # Sektion sofort, wenn ihr Plugin ausgeschaltet wird, ohne dass die
+        # Analyse neu laufen muss.
         st.session_state["enabled_plugins"] = {p["id"]: p["enabled"] for p in plugins}
         active_count = sum(1 for p in plugins if p["enabled"])
         st.caption(labels["plugin_manager_active_count"].format(active=active_count, total=len(plugins)))
@@ -1181,7 +1398,12 @@ with st.sidebar:
     # --- Gruppe: Aktionen ---
     sidebar_group_label(labels["sidebar_group_actions"])
     if st.button(labels["clear_chat_button"], key="clear_chat_button"):
-        for _key in ("result", "result_meta", "feedback_given", "feedback_type"):
+        for _key in (
+            "result", "result_meta", "feedback_given", "feedback_type",
+            "hitl_decision_given", "hitl_confidence_before", "hitl_confidence_after",
+            "hitl_learned_count", "score_correction_saved", "score_correction_value",
+            "score_correction_confidence_before", "score_correction_confidence_after",
+        ):
             st.session_state.pop(_key, None)
         st.rerun()
     show_analytics = st.checkbox(labels["show_analytics_checkbox"], key="show_analytics_checkbox")
@@ -1352,85 +1574,89 @@ with st.sidebar:
             st.info(answer or labels["chat_fallback"])
 
 st.title(labels["title"])
-st.caption(labels["caption"])
+st.markdown(f'<p class="sm-page-subheading">{labels["caption"]}</p>', unsafe_allow_html=True)
 
 # Anzeigenamen für das Dropdown vorbereiten
 club_options = {club["name"]: key for key, club in clubs.items()}
 
-# Mittlere Spalte (Formular + Ergebnis-Karten) + rechte Info-Spalte (Kosten,
-# Feedback, Quick Links) – die Sidebar selbst ist die "linke Spalte". Beide
-# Variablen werden unten sowohl vom Formular-Block als auch (nach einem
-# Rerun) vom Ergebnis-Block wiederverwendet.
-col_main, col_info = st.columns([2, 1])
+# Formular (oben) + Ergebnis-Karten (vertikal darunter), ein einziger
+# vertikaler Content-Flow rechts neben der Sidebar (kein separates Info-Spalten-Layout mehr).
+with st.container(key="card_form", border=True):
+    form_col1, form_col2 = st.columns(2)
+    with form_col1:
+        selected_club_name = st.selectbox(labels["club_select"], list(club_options.keys()))
+    with form_col2:
+        company_name = st.text_input(labels["company_input"], placeholder=labels["company_placeholder"])
 
-with col_main:
-    with st.container(key="card_form", border=True):
-        form_col1, form_col2 = st.columns(2)
-        with form_col1:
-            selected_club_name = st.selectbox(labels["club_select"], list(club_options.keys()))
-        with form_col2:
-            company_name = st.text_input(labels["company_input"], placeholder=labels["company_placeholder"])
+    st.info(labels["company_hint"])
 
-        st.info(labels["company_hint"])
+    if st.button(labels["start_button"], type="primary"):
+        rate_limit_ok, rate_limit_wait_minutes = check_rate_limit()
 
-        if st.button(labels["start_button"], type="primary"):
-            rate_limit_ok, rate_limit_wait_minutes = check_rate_limit()
+        if not company_name.strip():
+            st.warning(labels["warning_no_company"])
+        elif looks_like_question(company_name):
+            st.warning(labels["warning_is_question"])
+        elif not validate_company_input(company_name):
+            st.warning(labels["warning_invalid_company"])
+            log_security_event(company_name, "blocked_invalid_input")
+        elif not rate_limit_ok:
+            st.warning(labels["warning_rate_limit"].format(minutes=rate_limit_wait_minutes))
+            log_security_event(company_name, "blocked_rate_limit")
+        else:
+            record_request()
+            log_security_event(company_name, "success")
 
-            if not company_name.strip():
-                st.warning(labels["warning_no_company"])
-            elif looks_like_question(company_name):
-                st.warning(labels["warning_is_question"])
-            elif not validate_company_input(company_name):
-                st.warning(labels["warning_invalid_company"])
-                log_security_event(company_name, "blocked_invalid_input")
-            elif not rate_limit_ok:
-                st.warning(labels["warning_rate_limit"].format(minutes=rate_limit_wait_minutes))
-                log_security_event(company_name, "blocked_rate_limit")
-            else:
-                record_request()
-                log_security_event(company_name, "success")
+            selected_key = club_options[selected_club_name]
+            club_profile = clubs[selected_key]
 
-                selected_key = club_options[selected_club_name]
-                club_profile = clubs[selected_key]
+            with st.spinner(labels["spinner_text"]):
+                with collect_runs() as run_collector:
+                    result = app.invoke({
+                        "club_profile": club_profile,
+                        "company_name": company_name,
+                        "user_id": st.session_state["user_id"],
+                        "selected_model": selected_model,
+                        "language": language,
+                        "research_findings": "",
+                        "fit_score": 0.0,
+                        "fit_reasoning": "",
+                        "outreach_draft": "",
+                        "rejection_reason": "",
+                        "used_case_studies": [],
+                        "used_sponsorship_matches": [],
+                        "competitor_analysis": {},
+                        "budget_estimate": "",
+                        "size_compatibility": {},
+                        "analysis_id": 0,
+                        "learning_applied": False,
+                        "is_uncertain": False,
+                        "agent_confidence": 0,
+                        "hitl_resolved_count": 0,
+                        "token_usage": [],
+                    })
+                run_id = run_collector.traced_runs[0].id if run_collector.traced_runs else None
 
-                with st.spinner(labels["spinner_text"]):
-                    with collect_runs() as run_collector:
-                        result = app.invoke({
-                            "club_profile": club_profile,
-                            "company_name": company_name,
-                            "user_id": st.session_state["user_id"],
-                            "selected_model": selected_model,
-                            "language": language,
-                            "research_findings": "",
-                            "fit_score": 0.0,
-                            "fit_reasoning": "",
-                            "outreach_draft": "",
-                            "rejection_reason": "",
-                            "used_case_studies": [],
-                            "used_sponsorship_matches": [],
-                            "company_intelligence": {},
-                            "competitor_analysis": {},
-                            "budget_estimate": "",
-                            "analysis_id": 0,
-                            "learning_applied": False,
-                            "token_usage": [],
-                        })
-                    run_id = run_collector.traced_runs[0].id if run_collector.traced_runs else None
-
-                st.session_state["result"] = result
-                st.session_state["result_meta"] = {
-                    "club": club_profile["name"],
-                    "sport": club_profile["sport"],
-                    "company": company_name,
-                    "selected_model": selected_model,
-                    "language": language,
-                    "run_id": run_id,
-                    "analysis_id": result.get("analysis_id"),
-                }
-                st.session_state["feedback_given"] = False
-                # Rerun, damit die Sidebar (rendert vor diesem Block) sofort den frischen
-                # DB-Stand zeigt (Analyseverlauf, Score Consistency, Agent Confidence).
-                st.rerun()
+            st.session_state["result"] = result
+            st.session_state["result_meta"] = {
+                "club": club_profile["name"],
+                "sport": club_profile["sport"],
+                "company": company_name,
+                "selected_model": selected_model,
+                "language": language,
+                "run_id": run_id,
+                "analysis_id": result.get("analysis_id"),
+            }
+            st.session_state["feedback_given"] = False
+            for _key in (
+                "hitl_decision_given", "hitl_confidence_before", "hitl_confidence_after",
+                "hitl_learned_count", "score_correction_saved", "score_correction_value",
+                "score_correction_confidence_before", "score_correction_confidence_after",
+            ):
+                st.session_state.pop(_key, None)
+            # Rerun, damit die Sidebar (rendert vor diesem Block) sofort den frischen
+            # DB-Stand zeigt (Analyseverlauf, Score Consistency, Agent Confidence).
+            st.rerun()
 
 if "result" in st.session_state:
     result = st.session_state["result"]
@@ -1439,267 +1665,413 @@ if "result" in st.session_state:
     # Zeitpunkt der Analyse gewählt war (nicht nach der aktuellen Sidebar-Auswahl).
     result_labels = LABELS[meta.get("language", language)]
 
-    with col_main:
-        if is_plugin_enabled_for_display("web_search"):
-            with st.container(key="card_research", border=True):
-                with st.expander(result_labels["research_header"], expanded=False):
-                    findings = result["research_findings"]
-                    show_full = st.session_state.get("research_show_full", False)
-                    if len(findings) <= 200 or show_full:
-                        st.write(findings)
-                        if len(findings) > 200 and st.button(
-                            result_labels["research_less_btn"], key="research_less_btn"
-                        ):
-                            st.session_state["research_show_full"] = False
-                            st.rerun()
-                    else:
-                        st.write(findings[:200] + "…")
-                        if st.button(result_labels["research_more_btn"], key="research_more_btn"):
-                            st.session_state["research_show_full"] = True
-                            st.rerun()
-
-        if is_plugin_enabled_for_display("company_intelligence"):
-            with st.container(key="card_company_intel", border=True):
-                with st.expander(result_labels["company_intel_header"], expanded=False):
-                    st.caption(result_labels["company_intel_disclaimer"])
-                    company_intel = result.get("company_intelligence", {})
-                    if not company_intel or "error" in company_intel:
-                        message = company_intel.get("error", "") if company_intel else ""
-                        st.caption(result_labels["company_intel_none"].format(message=message))
-                    else:
-                        st.markdown(f"**{company_intel.get('company_name') or meta['company']}**")
-                        intel_col1, intel_col2, intel_col3 = st.columns(3)
-                        intel_col1.metric(
-                            result_labels["company_intel_number"], company_intel.get("company_number") or "—"
-                        )
-                        intel_col2.metric(
-                            result_labels["company_intel_status"],
-                            (company_intel.get("company_status") or "—").title(),
-                        )
-                        intel_col3.metric(
-                            result_labels["company_intel_founded"], company_intel.get("date_of_creation") or "—"
-                        )
-                        st.write(
-                            f"**{result_labels['company_intel_type']}:** {company_intel.get('company_type') or '—'}"
-                        )
-                        if company_intel.get("address"):
-                            st.write(f"**{result_labels['company_intel_address']}:** {company_intel['address']}")
-
-        if is_plugin_enabled_for_display("case_study_db"):
-            with st.container(key="card_case_studies", border=True):
-                with st.expander(result_labels["case_studies_header"], expanded=False):
-                    st.caption(result_labels["case_studies_disclaimer"])
-                    used_case_studies = result.get("used_case_studies", [])
-                    if used_case_studies:
-                        if used_case_studies[0].get("match_type") == "sport":
-                            st.caption(result_labels["case_studies_fallback"].format(company=meta["company"]))
-                        for case in used_case_studies:
-                            status = (
-                                result_labels["case_study_success"]
-                                if case["success"]
-                                else result_labels["case_study_no_success"]
-                            )
-                            st.markdown(f"**{case['company']} – {case['sport']} ({status})**")
-                            st.caption(case["summary"])
-                    else:
-                        st.caption(result_labels["case_studies_none"])
-
-        if is_plugin_enabled_for_display("sponsorship_db"):
-            with st.container(key="card_sponsorship_db", border=True):
-                with st.expander(result_labels["sponsorship_db_header"], expanded=False):
-                    st.caption(result_labels["sponsorship_db_disclaimer"])
-                    used_sponsorship_matches = result.get("used_sponsorship_matches", [])
-                    if used_sponsorship_matches:
-                        brand_fit_labels = {
-                            "high": result_labels["brand_fit_high"],
-                            "medium": result_labels["brand_fit_medium"],
-                            "low": result_labels["brand_fit_low"],
-                        }
-                        for match in used_sponsorship_matches:
-                            fit_text = brand_fit_labels.get(match["brand_fit"], result_labels["brand_fit_high"])
-                            st.markdown(
-                                f"**({fit_text})** "
-                                + result_labels["sponsorship_db_entry"].format(
-                                    company=match["company"],
-                                    team=match["athlete_or_team"],
-                                    year=match["start_year"],
-                                    metric=match["success_metric"],
-                                )
-                            )
-                    else:
-                        st.caption(result_labels["sponsorship_db_none"])
-
-        if is_plugin_enabled_for_display("budget_estimator"):
-            with st.container(key="card_budget_estimator", border=True):
-                with st.expander(result_labels["budget_estimator_header"], expanded=False):
-                    budget_estimate = result.get("budget_estimate", "")
-                    if budget_estimate:
-                        st.write(budget_estimate)
-                    else:
-                        st.caption(result_labels["budget_estimator_none"])
-
-        if is_plugin_enabled_for_display("competitor_analysis"):
-            with st.container(key="card_competitor_analysis", border=True):
-                with st.expander(result_labels["competitor_analysis_header"], expanded=False):
-                    portfolio = result.get("competitor_analysis", {})
-
-                    if not portfolio.get("found"):
-                        st.caption(result_labels["competitor_analysis_none"])
-                    else:
-                        st.caption(result_labels["portfolio_disclaimer"])
-
-                        # 1) Company's Sponsoring-Portfolio (generisch für jede Firma,
-                        # da alle Werte aus company_name/sport abgeleitet werden)
-                        st.markdown(
-                            f"**{result_labels['portfolio_categories_label']}:** "
-                            + (", ".join(portfolio["categories"]) or "—")
-                        )
-                        st.markdown(
-                            f"**{result_labels['portfolio_active_count_label']}:** {portfolio['active_count']}"
-                        )
-                        st.markdown(f"**{result_labels['portfolio_audience_label']}:** {portfolio['audience']}")
-
-                        # 2) Vergleich mit dem gewählten Verein
-                        st.markdown(
-                            f"**{result_labels['audience_fit_header'].format(club=meta['club'])}**"
-                        )
-                        fit_key = f"audience_fit_{portfolio['audience_fit']}"
-                        fit_display = result_labels.get(fit_key, portfolio["audience_fit"] or "—")
-                        st.write(f"{result_labels['audience_fit_label']} {fit_display}")
-                        st.progress(portfolio["match_percent"] / 100)
-                        st.caption(f"{result_labels['match_percent_label']}: {portfolio['match_percent']}%")
-
-                        # 3) Market Saturation (Company-Perspektive: eigene Sponsorings
-                        # dieser Firma in DIESER Sportart, nicht der Gesamtmarkt)
-                        st.markdown(f"**{result_labels['market_saturation_header']}**")
-                        st.write(
-                            result_labels["saturation_same_sport_label"].format(sport=meta.get("sport", ""))
-                            + f": {portfolio['same_sport_count']}"
-                        )
-                        saturation_level = portfolio["saturation_level"]
-                        saturation_progress = {"low": 0.25, "medium": 0.5, "high": 0.75, "extreme": 1.0}[
-                            saturation_level
-                        ]
-                        st.progress(saturation_progress)
-                        st.caption(
-                            f"{result_labels['saturation_level_label']}: "
-                            f"{result_labels[f'saturation_level_{saturation_level}']}"
-                        )
-                        st.caption(result_labels[f"market_saturation_interpretation_{saturation_level}"])
-
-                        # 4) Impact auf Fit-Score (dynamisch, siehe agent.py)
-                        st.markdown(f"**{result_labels['competitor_impact_header']}**")
-                        score_before = portfolio.get("score_before_adjustment", result["fit_score"])
-                        score_after = portfolio.get("score_after_adjustment", result["fit_score"])
-                        if score_before != score_after:
-                            st.info(
-                                result_labels["competitor_impact_adjusted"].format(
-                                    before=score_before,
-                                    after=score_after,
-                                    match_percent=portfolio["match_percent"],
-                                    saturation=result_labels[f"saturation_level_{saturation_level}"],
-                                    company=meta["company"],
-                                    sport=meta.get("sport", ""),
-                                )
-                            )
-                        else:
-                            st.caption(result_labels["competitor_impact_none"])
-
-        with st.container(key="card_fit", border=True):
-            with st.expander(result_labels["fit_header"], expanded=False):
-                if result.get("learning_applied"):
-                    st.badge(result_labels["learning_badge"], color="violet")
-                st.metric(result_labels["score_label"], f"{result['fit_score']:.2f}")
-                st.write(result["fit_reasoning"])
-
-        with st.container(key="card_outreach", border=True):
-            if result["outreach_draft"]:
-                with st.expander(result_labels["outreach_header"], expanded=False):
-                    st.success(result["outreach_draft"])
-            else:
-                with st.expander(result_labels["rejection_header"], expanded=False):
-                    st.error(result["rejection_reason"])
-
-    with col_info:
-        with st.container(key="card_tokens", border=True):
-            with st.expander(result_labels["tokens_header"], expanded=False):
-                total_tokens = sum(entry["total_tokens"] for entry in result["token_usage"])
-                total_input_tokens = sum(entry["input_tokens"] for entry in result["token_usage"])
-                total_output_tokens = sum(entry["output_tokens"] for entry in result["token_usage"])
-
-                pricing = MODEL_PRICING[meta["selected_model"]]
-                cost_usd = (
-                    total_input_tokens / 1000 * pricing["input"]
-                    + total_output_tokens / 1000 * pricing["output"]
-                )
-
-                st.metric(result_labels["total_tokens"], total_tokens)
-                st.metric(result_labels["estimated_cost"], f"${cost_usd:.4f}")
-
-                # Kein verschachtelter st.expander hier (Streamlit erlaubt keine
-                # geschachtelten Expander) – Checkbox übernimmt die Ein-/Ausklapp-Rolle.
-                if st.checkbox(result_labels["details_expander"], key="tokens_details_toggle"):
-                    st.caption(result_labels["model_caption"].format(model=meta["selected_model"]))
-                    for entry in result["token_usage"]:
-                        entry_cost = (
-                            entry["input_tokens"] / 1000 * pricing["input"]
-                            + entry["output_tokens"] / 1000 * pricing["output"]
-                        )
-                        st.write(
-                            f"**{entry['node']}**: {entry['total_tokens']} Tokens "
-                            f"(Input: {entry['input_tokens']}, Output: {entry['output_tokens']}) "
-                            f"– ${entry_cost:.4f}"
-                        )
-
-        with st.container(key="card_feedback", border=True):
-            with st.expander(result_labels["feedback_question"], expanded=False):
-                feedback_given = st.session_state.get("feedback_given", False)
-
-                if st.button(
-                    result_labels["feedback_positive_btn"],
-                    disabled=feedback_given,
-                    key="feedback_positive",
-                ):
-                    save_feedback(
-                        meta["club"], meta["company"], result["fit_score"], "positive", meta["selected_model"]
-                    )
-                    if meta.get("analysis_id"):
-                        update_analysis_feedback(meta["analysis_id"], "positive")
-                    st.session_state["feedback_given"] = True
-                    st.session_state["feedback_type"] = "positive"
-                    st.rerun()
-
-                if st.button(
-                    result_labels["feedback_negative_btn"],
-                    disabled=feedback_given,
-                    key="feedback_negative",
-                ):
-                    save_feedback(
-                        meta["club"], meta["company"], result["fit_score"], "negative", meta["selected_model"]
-                    )
-                    if meta.get("analysis_id"):
-                        update_analysis_feedback(meta["analysis_id"], "negative")
-                    st.session_state["feedback_given"] = True
-                    st.session_state["feedback_type"] = "negative"
-                    st.rerun()
-
-                if feedback_given:
-                    feedback_type = st.session_state.get("feedback_type", "positive")
-                    thanks_key = (
-                        "feedback_thanks_positive" if feedback_type == "positive" else "feedback_thanks_negative"
-                    )
-                    st.success(result_labels[thanks_key])
-
-        with st.container(key="card_quicklinks", border=True):
-            with st.expander(labels["quicklinks_header"], expanded=False):
-                st.caption(result_labels["trace_header"])
-                run_id = meta.get("run_id")
-                if not run_id:
-                    st.caption(result_labels["trace_none"])
+    if is_plugin_enabled_for_display("web_search"):
+        with st.container(key="card_research", border=True):
+            with st.expander(result_labels["research_header"], expanded=False):
+                findings = result["research_findings"]
+                show_full = st.session_state.get("research_show_full", False)
+                if len(findings) <= 300 or show_full:
+                    st.write(findings)
+                    if len(findings) > 300 and st.button(
+                        result_labels["research_less_btn"], key="research_less_btn"
+                    ):
+                        st.session_state["research_show_full"] = False
+                        st.rerun()
                 else:
-                    trace_url = get_langsmith_trace_url(run_id)
-                    if trace_url:
-                        st.markdown(f"[{result_labels['trace_link']}]({trace_url})")
+                    st.write(findings[:300] + "…")
+                    if st.button(result_labels["research_more_btn"], key="research_more_btn"):
+                        st.session_state["research_show_full"] = True
+                        st.rerun()
+
+    if is_plugin_enabled_for_display("case_study_db"):
+        with st.container(key="card_case_studies", border=True):
+            with st.expander(result_labels["case_studies_header"], expanded=False):
+                st.caption(result_labels["case_studies_disclaimer"])
+                used_case_studies = result.get("used_case_studies", [])
+                if used_case_studies:
+                    if used_case_studies[0].get("match_type") == "sport":
+                        st.caption(result_labels["case_studies_fallback"].format(company=meta["company"]))
+                    for case in used_case_studies:
+                        status = (
+                            result_labels["case_study_success"]
+                            if case["success"]
+                            else result_labels["case_study_no_success"]
+                        )
+                        st.markdown(f"**{case['company']} – {case['sport']} ({status})**")
+                        st.caption(case["summary"])
+                else:
+                    st.caption(result_labels["case_studies_none"])
+
+    if is_plugin_enabled_for_display("sponsorship_db"):
+        with st.container(key="card_sponsorship_db", border=True):
+            with st.expander(result_labels["sponsorship_db_header"], expanded=False):
+                st.caption(result_labels["sponsorship_db_disclaimer"])
+                used_sponsorship_matches = result.get("used_sponsorship_matches", [])
+                if used_sponsorship_matches:
+                    brand_fit_labels = {
+                        "high": result_labels["brand_fit_high"],
+                        "medium": result_labels["brand_fit_medium"],
+                        "low": result_labels["brand_fit_low"],
+                    }
+                    for match in used_sponsorship_matches:
+                        fit_text = brand_fit_labels.get(match["brand_fit"], result_labels["brand_fit_high"])
+                        st.markdown(
+                            f"**({fit_text})** "
+                            + result_labels["sponsorship_db_entry"].format(
+                                company=match["company"],
+                                team=match["athlete_or_team"],
+                                year=match["start_year"],
+                                metric=match["success_metric"],
+                            )
+                        )
+                else:
+                    st.caption(result_labels["sponsorship_db_none"])
+
+    if is_plugin_enabled_for_display("budget_estimator"):
+        with st.container(key="card_budget_estimator", border=True):
+            with st.expander(result_labels["budget_estimator_header"], expanded=False):
+                budget_estimate = result.get("budget_estimate", "")
+                if budget_estimate:
+                    st.write(budget_estimate)
+                else:
+                    st.caption(result_labels["budget_estimator_none"])
+
+    if is_plugin_enabled_for_display("competitor_analysis"):
+        with st.container(key="card_competitor_analysis", border=True):
+            with st.expander(result_labels["competitor_analysis_header"], expanded=False):
+                portfolio = result.get("competitor_analysis", {})
+
+                if not portfolio.get("found"):
+                    st.caption(result_labels["competitor_analysis_none"])
+                else:
+                    st.caption(result_labels["portfolio_disclaimer"])
+
+                    # 1) Company's Sponsoring-Portfolio (generisch für jede Firma,
+                    # da alle Werte aus company_name/sport abgeleitet werden)
+                    st.markdown(
+                        f"**{result_labels['portfolio_categories_label']}:** "
+                        + (", ".join(portfolio["categories"]) or "—")
+                    )
+                    st.markdown(
+                        f"**{result_labels['portfolio_active_count_label']}:** {portfolio['active_count']}"
+                    )
+                    st.markdown(f"**{result_labels['portfolio_audience_label']}:** {portfolio['audience']}")
+
+                    # 2) Vergleich mit dem gewählten Verein
+                    st.markdown(
+                        f"**{result_labels['audience_fit_header'].format(club=meta['club'])}**"
+                    )
+                    fit_key = f"audience_fit_{portfolio['audience_fit']}"
+                    fit_display = result_labels.get(fit_key, portfolio["audience_fit"] or "—")
+                    st.write(f"{result_labels['audience_fit_label']} {fit_display}")
+                    st.progress(portfolio["match_percent"] / 100)
+                    st.caption(f"{result_labels['match_percent_label']}: {portfolio['match_percent']}%")
+
+                    # 3) Market Saturation (Company-Perspektive: eigene Sponsorings
+                    # dieser Firma in DIESER Sportart, nicht der Gesamtmarkt)
+                    st.markdown(f"**{result_labels['market_saturation_header']}**")
+                    st.write(
+                        result_labels["saturation_same_sport_label"].format(sport=meta.get("sport", ""))
+                        + f": {portfolio['same_sport_count']}"
+                    )
+                    saturation_level = portfolio["saturation_level"]
+                    saturation_progress = {"low": 0.25, "medium": 0.5, "high": 0.75, "extreme": 1.0}[
+                        saturation_level
+                    ]
+                    st.progress(saturation_progress)
+                    st.caption(
+                        f"{result_labels['saturation_level_label']}: "
+                        f"{result_labels[f'saturation_level_{saturation_level}']}"
+                    )
+                    st.caption(result_labels[f"market_saturation_interpretation_{saturation_level}"])
+
+                    # 4) Impact auf Fit-Score (dynamisch, siehe agent.py)
+                    st.markdown(f"**{result_labels['competitor_impact_header']}**")
+                    score_before = portfolio.get("score_before_adjustment", result["fit_score"])
+                    score_after = portfolio.get("score_after_adjustment", result["fit_score"])
+                    if score_before != score_after:
+                        st.info(
+                            result_labels["competitor_impact_adjusted"].format(
+                                before=score_before,
+                                after=score_after,
+                                match_percent=portfolio["match_percent"],
+                                saturation=result_labels[f"saturation_level_{saturation_level}"],
+                                company=meta["company"],
+                                sport=meta.get("sport", ""),
+                            )
+                        )
                     else:
-                        project = os.environ.get("LANGSMITH_PROJECT", "sponsor-match")
-                        st.caption(result_labels["trace_fallback"].format(run_id=run_id, project=project))
+                        st.caption(result_labels["competitor_impact_none"])
+
+    if is_plugin_enabled_for_display("size_matching"):
+        with st.container(key="card_size_compatibility", border=True):
+            with st.expander(result_labels["size_compatibility_header"], expanded=False):
+                size_compat = result.get("size_compatibility", {})
+                if not size_compat:
+                    st.caption(result_labels["size_compatibility_none"])
+                else:
+                    st.caption(result_labels["size_compatibility_disclaimer"])
+                    st.write(f"**{result_labels['club_size_label']}:** {size_compat['club_size']}")
+                    st.write(f"**{result_labels['company_size_label']}:** {size_compat['company_size']}")
+
+                    match_percent = size_compat["match_percent"]
+                    if match_percent > 70:
+                        bar_color = "#22b14c"
+                    elif match_percent >= 40:
+                        bar_color = "#ff9800"
+                    else:
+                        bar_color = "#f44336"
+                    st.markdown(
+                        f"""<div style="background-color:rgba(255,255,255,0.15);
+                        border-radius:4px;height:10px;width:100%;overflow:hidden;">
+                        <div style="background-color:{bar_color};width:{match_percent}%;
+                        height:100%;"></div></div>""",
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(f"{result_labels['match_score_label']}: {match_percent}%")
+                    st.write(size_compat["explanation"])
+
+                    score_before = size_compat.get("score_before_adjustment", result["fit_score"])
+                    score_after = size_compat.get("score_after_adjustment", result["fit_score"])
+                    if score_before != score_after:
+                        st.info(
+                            result_labels["size_compatibility_impact"].format(
+                                before=score_before,
+                                after=score_after,
+                                club_size=size_compat["club_size"],
+                                company_size=size_compat["company_size"],
+                                match_percent=match_percent,
+                            )
+                        )
+
+    with st.container(key="card_fit", border=True):
+        with st.expander(result_labels["fit_header"], expanded=False):
+            if result.get("learning_applied"):
+                st.badge(result_labels["learning_badge"], color="violet")
+
+            # round(): frühere Score-Anpassungen (z.B. 0.5 - 0.05) erzeugen gelegentlich
+            # Gleitkomma-Artefakte wie 0.44999999999999996 – ohne Rundung würde ein für den
+            # User sichtbares "0.45" fälschlich als "Schlechter" statt "Moderater Fit" gelten.
+            fit_score = round(result["fit_score"], 2)
+            if fit_score > 0.65:
+                tier_color, tier_key = "#22b14c", "fit_status_good"
+            elif fit_score >= 0.45:
+                tier_color, tier_key = "#ff9800", "fit_status_moderate"
+            else:
+                tier_color, tier_key = "#f44336", "fit_status_poor"
+            st.markdown(
+                f'<div style="font-size:13px;color:#9a9a9a;">{result_labels["score_label"]}</div>'
+                f'<div style="font-size:52px;font-weight:700;color:{tier_color};'
+                f'line-height:1.15;">{fit_score:.2f}</div>'
+                f'<div style="font-size:16px;font-weight:700;color:{tier_color};'
+                f'margin-bottom:12px;">{result_labels[tier_key]}</div>',
+                unsafe_allow_html=True,
+            )
+            st.write(result["fit_reasoning"])
+
+    if result.get("is_uncertain"):
+        # Human-in-the-Loop: nur bei unsicheren Scores (0.45-0.55) sichtbar, deshalb
+        # bewusst standardmäßig aufgeklappt (expanded=True) statt wie sonst üblich
+        # eingeklappt – hier gibt es aktiv etwas zu entscheiden, kein Text zum Verstecken.
+        with st.container(key="card_hitl_review", border=True):
+            with st.expander(result_labels["hitl_header"], expanded=True):
+                st.warning(
+                    result_labels["hitl_uncertain_warning"].format(
+                        confidence=result.get("agent_confidence", round(result["fit_score"] * 100))
+                    )
+                )
+                analysis_id = meta.get("analysis_id")
+                hitl_decision_given = st.session_state.get("hitl_decision_given")
+
+                if not hitl_decision_given:
+                    st.caption(result_labels["hitl_review_prompt"])
+                    hitl_col1, hitl_col2, hitl_col3 = st.columns(3)
+                    decision_clicked = None
+                    if hitl_col1.button(result_labels["hitl_agree_btn"], key="hitl_agree"):
+                        decision_clicked = "agree"
+                    if hitl_col2.button(result_labels["hitl_disagree_btn"], key="hitl_disagree"):
+                        decision_clicked = "disagree"
+                    if hitl_col3.button(result_labels["hitl_more_info_btn"], key="hitl_more_info"):
+                        decision_clicked = "need_more_info"
+
+                    if decision_clicked and analysis_id:
+                        confidence_before = result.get("agent_confidence", 50)
+                        update_analysis_hitl_decision(analysis_id, decision_clicked)
+                        resolved_rows = get_resolved_hitl_decisions(meta["company"])
+                        confidence_after = compute_agent_confidence(result["fit_score"], len(resolved_rows))
+                        st.session_state["hitl_decision_given"] = decision_clicked
+                        st.session_state["hitl_confidence_before"] = confidence_before
+                        st.session_state["hitl_confidence_after"] = confidence_after
+                        st.session_state["hitl_learned_count"] = len(resolved_rows)
+                        st.rerun()
+                else:
+                    st.success(result_labels["hitl_decision_recorded"])
+                    if hitl_decision_given in ("agree", "disagree"):
+                        st.caption(
+                            result_labels["hitl_confidence_improved"].format(
+                                before=st.session_state.get("hitl_confidence_before", 0),
+                                after=st.session_state.get("hitl_confidence_after", 0),
+                            )
+                        )
+                        st.caption(
+                            result_labels["hitl_learned_count"].format(
+                                count=st.session_state.get("hitl_learned_count", 0)
+                            )
+                        )
+                    else:
+                        st.caption(result_labels["hitl_more_info_recorded"])
+
+    with st.container(key="card_outreach", border=True):
+        if result["outreach_draft"]:
+            with st.expander(result_labels["outreach_header"], expanded=False):
+                st.success(result["outreach_draft"])
+        else:
+            with st.expander(result_labels["rejection_header"], expanded=False):
+                st.error(result["rejection_reason"])
+
+    with st.container(key="card_tokens", border=True):
+        with st.expander(result_labels["tokens_header"], expanded=False):
+            total_tokens = sum(entry["total_tokens"] for entry in result["token_usage"])
+            total_input_tokens = sum(entry["input_tokens"] for entry in result["token_usage"])
+            total_output_tokens = sum(entry["output_tokens"] for entry in result["token_usage"])
+
+            pricing = MODEL_PRICING[meta["selected_model"]]
+            cost_usd = (
+                total_input_tokens / 1000 * pricing["input"]
+                + total_output_tokens / 1000 * pricing["output"]
+            )
+
+            st.metric(result_labels["total_tokens"], total_tokens)
+            st.metric(result_labels["estimated_cost"], f"${cost_usd:.4f}")
+
+            # Kein verschachtelter st.expander hier (Streamlit erlaubt keine
+            # geschachtelten Expander) – Checkbox übernimmt die Ein-/Ausklapp-Rolle.
+            if st.checkbox(result_labels["details_expander"], key="tokens_details_toggle"):
+                st.caption(result_labels["model_caption"].format(model=meta["selected_model"]))
+                for entry in result["token_usage"]:
+                    entry_cost = (
+                        entry["input_tokens"] / 1000 * pricing["input"]
+                        + entry["output_tokens"] / 1000 * pricing["output"]
+                    )
+                    st.write(
+                        f"**{entry['node']}**: {entry['total_tokens']} Tokens "
+                        f"(Input: {entry['input_tokens']}, Output: {entry['output_tokens']}) "
+                        f"– ${entry_cost:.4f}"
+                    )
+
+    with st.container(key="card_feedback", border=True):
+        render_card_title(result_labels["feedback_question"])
+        feedback_given = st.session_state.get("feedback_given", False)
+        feedback_col1, feedback_col2 = st.columns(2)
+
+        if feedback_col1.button(
+            result_labels["feedback_positive_btn"],
+            disabled=feedback_given,
+            key="feedback_positive",
+            use_container_width=True,
+        ):
+            save_feedback(
+                meta["club"], meta["company"], result["fit_score"], "positive", meta["selected_model"]
+            )
+            if meta.get("analysis_id"):
+                update_analysis_feedback(meta["analysis_id"], "positive")
+            st.session_state["feedback_given"] = True
+            st.session_state["feedback_type"] = "positive"
+            st.rerun()
+
+        if feedback_col2.button(
+            result_labels["feedback_negative_btn"],
+            disabled=feedback_given,
+            key="feedback_negative",
+            use_container_width=True,
+        ):
+            save_feedback(
+                meta["club"], meta["company"], result["fit_score"], "negative", meta["selected_model"]
+            )
+            if meta.get("analysis_id"):
+                update_analysis_feedback(meta["analysis_id"], "negative")
+            st.session_state["feedback_given"] = True
+            st.session_state["feedback_type"] = "negative"
+            st.rerun()
+
+        if feedback_given:
+            feedback_type = st.session_state.get("feedback_type", "positive")
+            thanks_key = (
+                "feedback_thanks_positive" if feedback_type == "positive" else "feedback_thanks_negative"
+            )
+            st.success(result_labels[thanks_key])
+
+            # Manual Score Adjustment: nur nach negativem Feedback, damit der User
+            # explizit die Ground Truth für genau diese Firma+Verein-Kombination
+            # festlegen kann (volle Nutzerkontrolle statt nur binärem Daumen-runter).
+            if feedback_type == "negative":
+                st.divider()
+                st.markdown(f"**{result_labels['score_correction_header']}**")
+                correction_saved = st.session_state.get("score_correction_saved", False)
+
+                if not correction_saved:
+                    corrected_value = st.slider(
+                        result_labels["score_correction_prompt"],
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=float(result["fit_score"]),
+                        step=0.01,
+                        key="score_correction_slider",
+                    )
+                    if st.button(
+                        result_labels["score_correction_save_btn"],
+                        key="score_correction_save",
+                        type="primary",
+                    ):
+                        analysis_id = meta.get("analysis_id")
+                        if analysis_id:
+                            existing_corrections = count_score_corrections(
+                                meta["company"], meta["club"]
+                            )
+                            confidence_before = compute_agent_confidence(
+                                result["fit_score"], existing_corrections
+                            )
+                            update_analysis_corrected_score(analysis_id, corrected_value)
+                            new_correction_count = count_score_corrections(
+                                meta["company"], meta["club"]
+                            )
+                            confidence_after = compute_agent_confidence(
+                                corrected_value, new_correction_count
+                            )
+                            # Alte Analyse aktualisiert sich sofort in der Anzeige.
+                            result["fit_score"] = corrected_value
+                            result["is_uncertain"] = 0.45 <= corrected_value <= 0.55
+                            result["agent_confidence"] = confidence_after
+                            st.session_state["score_correction_saved"] = True
+                            st.session_state["score_correction_value"] = corrected_value
+                            st.session_state["score_correction_confidence_before"] = confidence_before
+                            st.session_state["score_correction_confidence_after"] = confidence_after
+                            st.rerun()
+                else:
+                    st.success(
+                        result_labels["score_correction_thanks"].format(
+                            company=meta["company"],
+                            club=meta["club"],
+                            score=st.session_state.get("score_correction_value", 0.0),
+                        )
+                    )
+                    st.caption(
+                        result_labels["score_correction_confidence_improved"].format(
+                            before=st.session_state.get("score_correction_confidence_before", 0),
+                            after=st.session_state.get("score_correction_confidence_after", 0),
+                        )
+                    )
+
+    with st.container(key="card_quicklinks", border=True):
+        render_card_title(labels["quicklinks_header"])
+        st.caption(result_labels["trace_header"])
+        run_id = meta.get("run_id")
+        if not run_id:
+            st.caption(result_labels["trace_none"])
+        else:
+            trace_url = get_langsmith_trace_url(run_id)
+            if trace_url:
+                st.markdown(f"[{result_labels['trace_link']}]({trace_url})")
+            else:
+                project = os.environ.get("LANGSMITH_PROJECT", "sponsor-match")
+                st.caption(result_labels["trace_fallback"].format(run_id=run_id, project=project))
