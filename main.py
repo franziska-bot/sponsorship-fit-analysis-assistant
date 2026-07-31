@@ -375,90 +375,34 @@ def render_help_popover(help_text: str) -> None:
         st.caption("", help=help_text)
 
 
-# --- User Authentication (Login/Register) ---
-# Login-Bildschirm ist bewusst nicht mehrsprachig (fest Deutsch) – die
-# Sprachauswahl selbst lebt in der Sidebar der Hauptapp, die vor dem Login
-# noch nicht sichtbar ist (Henne-Ei-Problem), daher hier kein LABELS-Bezug.
-
-SESSION_TIMEOUT_SECONDS = 30 * 60  # 30 Min. Inaktivität -> automatischer Logout
-
-
-def render_auth_ui() -> None:
-    st.title("Sponsor Match")
-    st.caption("Bitte melde dich an, um fortzufahren.")
-
-    tab_login, tab_register = st.tabs(["Login", "Register"])
-
-    with tab_login:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Passwort", type="password")
-            login_submitted = st.form_submit_button("Login", type="primary")
-        if login_submitted:
-            user = verify_user(username.strip(), password)
-            if user:
-                st.session_state["user"] = user["username"]
-                st.session_state["user_id"] = user["id"]
-                st.session_state["last_activity"] = time.time()
-                st.rerun()
-            else:
-                st.error("Ungültiger Username oder Passwort.")
-
-    with tab_register:
-        with st.form("register_form"):
-            new_username = st.text_input("Username", key="reg_username")
-            new_email = st.text_input("E-Mail", key="reg_email")
-            new_password = st.text_input("Passwort", type="password", key="reg_password")
-            confirm_password = st.text_input(
-                "Passwort bestätigen", type="password", key="reg_confirm"
-            )
-            register_submitted = st.form_submit_button("Registrieren", type="primary")
-        if register_submitted:
-            if not new_username.strip() or len(new_username.strip()) < 3:
-                st.error("Username muss mindestens 3 Zeichen haben.")
-            elif len(new_password) < 8:
-                st.error("Passwort muss mindestens 8 Zeichen haben.")
-            elif new_password != confirm_password:
-                st.error("Passwörter stimmen nicht überein.")
-            else:
-                success, error_code = create_user(
-                    new_username.strip(), new_password, new_email.strip()
-                )
-                if success:
-                    st.success("Account erstellt! Du kannst dich jetzt einloggen.")
-                elif error_code == "username_taken":
-                    st.error("Dieser Username ist bereits vergeben.")
-                else:
-                    st.error("Registrierung fehlgeschlagen.")
-
-
-if "user" not in st.session_state:
-    render_auth_ui()
-    st.stop()
-
-if time.time() - st.session_state.get("last_activity", time.time()) > SESSION_TIMEOUT_SECONDS:
-    for _key in ("user", "user_id", "last_activity"):
-        st.session_state.pop(_key, None)
-    st.warning("Session wegen Inaktivität abgelaufen. Bitte erneut anmelden.")
-    render_auth_ui()
-    st.stop()
-
-st.session_state["last_activity"] = time.time()
-
-# OpenRouter-Preise in $ pro 1K Tokens
-MODEL_PRICING = {
-    "openai/gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-    "openai/gpt-4o": {"input": 0.005, "output": 0.015},
-    "openai/gpt-4-turbo": {"input": 0.01, "output": 0.03},
-    "anthropic/claude-3-5-sonnet": {"input": 0.003, "output": 0.015},
-}
-
+# --- Sprachauswahl & Texte (LABELS) ---
+# Muss vor render_auth_ui() definiert sein, da bereits der Login/Register-
+# Screen mehrsprachig ist (eigene Sprachauswahl, unabhängig vom eingeloggten
+# User – siehe auth_language in render_auth_ui).
 LANGUAGE_MAP = {"Deutsch": "de", "English": "en", "Français": "fr"}
 
 LABELS = {
     "de": {
         "title": "Sponsor Match",
         "caption": "Sponsoring-Fit-Analyse für Sportvereine",
+        "auth_title": "Sponsor Match",
+        "auth_subtitle": "Bitte melde dich an, um fortzufahren.",
+        "login_tab": "Anmelden",
+        "register_tab": "Registrieren",
+        "username_label": "Benutzername",
+        "password_label": "Passwort",
+        "login_button": "Anmelden",
+        "invalid_credentials_error": "Ungültiger Benutzername oder Passwort.",
+        "email_label": "E-Mail",
+        "confirm_password_label": "Passwort bestätigen",
+        "register_button": "Registrieren",
+        "username_min_length_error": "Benutzername muss mindestens 3 Zeichen haben.",
+        "password_min_length_error": "Passwort muss mindestens 8 Zeichen haben.",
+        "password_mismatch_error": "Passwörter stimmen nicht überein.",
+        "account_created_success": "Account erstellt! Du kannst dich jetzt einloggen.",
+        "username_taken_error": "Dieser Benutzername ist bereits vergeben.",
+        "registration_failed_error": "Registrierung fehlgeschlagen.",
+        "session_timeout_warning": "Session wegen Inaktivität abgelaufen. Bitte erneut anmelden.",
         "settings": "Einstellungen",
         "model_label": "LLM Modell",
         "model_label_help": "Wählt das LLM-Modell für Recherche & Bewertung; beeinflusst Qualität und Kosten.",
@@ -647,6 +591,24 @@ LABELS = {
     "en": {
         "title": "Sponsor Match",
         "caption": "Sponsorship fit analysis for sports clubs",
+        "auth_title": "Sponsor Match",
+        "auth_subtitle": "Please log in to continue.",
+        "login_tab": "Login",
+        "register_tab": "Register",
+        "username_label": "Username",
+        "password_label": "Password",
+        "login_button": "Login",
+        "invalid_credentials_error": "Invalid username or password.",
+        "email_label": "Email",
+        "confirm_password_label": "Confirm password",
+        "register_button": "Register",
+        "username_min_length_error": "Username must be at least 3 characters.",
+        "password_min_length_error": "Password must be at least 8 characters.",
+        "password_mismatch_error": "Passwords do not match.",
+        "account_created_success": "Account created! You can now log in.",
+        "username_taken_error": "This username is already taken.",
+        "registration_failed_error": "Registration failed.",
+        "session_timeout_warning": "Session expired due to inactivity. Please log in again.",
         "settings": "Settings",
         "model_label": "LLM Model",
         "model_label_help": "Selects the LLM model for research & evaluation; affects quality and cost.",
@@ -835,6 +797,24 @@ LABELS = {
     "fr": {
         "title": "Sponsor Match",
         "caption": "Analyse de compatibilité de sponsoring pour clubs sportifs",
+        "auth_title": "Sponsor Match",
+        "auth_subtitle": "Veuillez vous connecter pour continuer.",
+        "login_tab": "Connexion",
+        "register_tab": "Inscription",
+        "username_label": "Nom d'utilisateur",
+        "password_label": "Mot de passe",
+        "login_button": "Connexion",
+        "invalid_credentials_error": "Nom d'utilisateur ou mot de passe invalide.",
+        "email_label": "E-mail",
+        "confirm_password_label": "Confirmer le mot de passe",
+        "register_button": "S'inscrire",
+        "username_min_length_error": "Le nom d'utilisateur doit comporter au moins 3 caractères.",
+        "password_min_length_error": "Le mot de passe doit comporter au moins 8 caractères.",
+        "password_mismatch_error": "Les mots de passe ne correspondent pas.",
+        "account_created_success": "Compte créé ! Vous pouvez maintenant vous connecter.",
+        "username_taken_error": "Ce nom d'utilisateur est déjà pris.",
+        "registration_failed_error": "Échec de l'inscription.",
+        "session_timeout_warning": "Session expirée pour cause d'inactivité. Veuillez vous reconnecter.",
         "settings": "Paramètres",
         "model_label": "Modèle LLM",
         "model_label_help": "Sélectionne le modèle LLM pour la recherche et l'évaluation ; influence qualité et coût.",
@@ -1020,6 +1000,99 @@ LABELS = {
         "quicklinks_header": "Liens rapides",
         "quicklinks_help": "Lien direct vers la trace LangSmith pour déboguer l'analyse.",
     },
+}
+
+
+# --- User Authentication (Login/Register) ---
+
+SESSION_TIMEOUT_SECONDS = 30 * 60  # 30 Min. Inaktivität -> automatischer Logout
+
+
+def render_auth_ui() -> None:
+    auth_language = LANGUAGE_MAP.get(
+        st.session_state.get("auth_language_select", "Deutsch"), "de"
+    )
+    st.selectbox(
+        "Sprache / Language / Langue",
+        options=list(LANGUAGE_MAP.keys()),
+        key="auth_language_select",
+        label_visibility="collapsed",
+    )
+    labels = LABELS[auth_language]
+
+    st.title(labels["auth_title"])
+    st.caption(labels["auth_subtitle"])
+
+    tab_login, tab_register = st.tabs([labels["login_tab"], labels["register_tab"]])
+
+    with tab_login:
+        with st.form("login_form"):
+            username = st.text_input(labels["username_label"])
+            password = st.text_input(labels["password_label"], type="password")
+            login_submitted = st.form_submit_button(labels["login_button"], type="primary")
+        if login_submitted:
+            user = verify_user(username.strip(), password)
+            if user:
+                st.session_state["user"] = user["username"]
+                st.session_state["user_id"] = user["id"]
+                st.session_state["last_activity"] = time.time()
+                st.rerun()
+            else:
+                st.error(labels["invalid_credentials_error"])
+
+    with tab_register:
+        with st.form("register_form"):
+            new_username = st.text_input(labels["username_label"], key="reg_username")
+            new_email = st.text_input(labels["email_label"], key="reg_email")
+            new_password = st.text_input(
+                labels["password_label"], type="password", key="reg_password"
+            )
+            confirm_password = st.text_input(
+                labels["confirm_password_label"], type="password", key="reg_confirm"
+            )
+            register_submitted = st.form_submit_button(labels["register_button"], type="primary")
+        if register_submitted:
+            if not new_username.strip() or len(new_username.strip()) < 3:
+                st.error(labels["username_min_length_error"])
+            elif len(new_password) < 8:
+                st.error(labels["password_min_length_error"])
+            elif new_password != confirm_password:
+                st.error(labels["password_mismatch_error"])
+            else:
+                success, error_code = create_user(
+                    new_username.strip(), new_password, new_email.strip()
+                )
+                if success:
+                    st.success(labels["account_created_success"])
+                elif error_code == "username_taken":
+                    st.error(labels["username_taken_error"])
+                else:
+                    st.error(labels["registration_failed_error"])
+
+
+if "user" not in st.session_state:
+    render_auth_ui()
+    st.stop()
+
+if time.time() - st.session_state.get("last_activity", time.time()) > SESSION_TIMEOUT_SECONDS:
+    for _key in ("user", "user_id", "last_activity"):
+        st.session_state.pop(_key, None)
+    _timeout_language = LANGUAGE_MAP.get(
+        st.session_state.get("auth_language_select", "Deutsch"), "de"
+    )
+    st.warning(LABELS[_timeout_language]["session_timeout_warning"])
+    render_auth_ui()
+    st.stop()
+
+st.session_state["last_activity"] = time.time()
+
+
+# OpenRouter-Preise in $ pro 1K Tokens
+MODEL_PRICING = {
+    "openai/gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+    "openai/gpt-4o": {"input": 0.005, "output": 0.015},
+    "openai/gpt-4-turbo": {"input": 0.01, "output": 0.03},
+    "anthropic/claude-3-5-sonnet": {"input": 0.003, "output": 0.015},
 }
 
 FEEDBACK_DISPLAY = {
