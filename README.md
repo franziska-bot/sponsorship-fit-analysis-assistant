@@ -9,7 +9,7 @@ Sponsor Match ist eine Streamlit-App, die mit einem [LangGraph](https://www.lang
 - **Recherche & Fit-Bewertung**: Web-Recherche zur Firma (Tavily), LLM-basierte Bewertung mit Score, Pro-/Contra-Stichpunkten und einer Empfehlung.
 - **Konkurrenzanalyse (Portfolio-Plugin)**: Analysiert generisch für jede Firma deren eigenes Sponsoring-Portfolio (Kategorien, aktive Sponsorings, Zielgruppe), Zielgruppen-Match zum Verein und Marktsättigung in der jeweiligen Sportart – mit dynamischer Score-Anpassung.
 - **Size Matching**: Vergleicht Club-Größe (statisch je Verein) und Company-Größe (per Web-Suche + LLM geschätzt: Small/Medium/Large) und passt den Score anhand einer Größen-Match-Matrix an.
-- **Budget Estimator & externe Sponsorship-DB**: Datenbasierte Budget-Schätzung und historische Sponsoring-Beispiele aus einer fiktiven externen Datenbank.
+- **Budget Estimator & externe Sponsorship-DB**: Datenbasierte Budget-Schätzung und historische Sponsoring-Beispiele aus einer fiktiven externen Datenbank, ergänzt um echte Finanzkennzahlen (Umsatz, EBITDA, Gewinn, Cash, Marketingausgaben), die best-effort aus online gefundenen Geschäftsberichten (PDF) extrahiert werden.
 - **Case-Study-Wissensbasis**: RAG-Suche über fiktive Sponsoring-Case-Studies als zusätzlicher Kontext für die Bewertung.
 - **Human-in-the-Loop (HITL)**: Bei unsicheren Scores (0.45–0.55) kann der Nutzer der Einschätzung zustimmen, widersprechen oder weitere Informationen anfordern – der Agent lernt daraus für künftige Anfragen zur selben Firma.
 - **Manuelle Score-Korrektur**: Nach negativem Feedback kann der Nutzer per Slider den korrekten Score festlegen; dieser wird als Ground Truth gespeichert und beim nächsten Mal für dieselbe Firma+Verein-Kombination verwendet.
@@ -20,7 +20,11 @@ Sponsor Match ist eine Streamlit-App, die mit einem [LangGraph](https://www.lang
 - **Mehrsprachigkeit**: Deutsch, Englisch, Französisch (UI-Texte und Agent-Antworten).
 - **Nutzerverwaltung**: Login/Registrierung, bevorzugte Sprache & Lieblingsvereine, Account-Löschung, Session-Timeout.
 - **LangSmith-Tracing**: Optionaler Trace-Link pro Analyse zur Fehlersuche/Nachvollziehbarkeit.
-- **MCP Server**: `mcp_server.py` exponiert Recherche, Konkurrenzanalyse, Fit-Bewertung und Size Matching als MCP-Tools (z.B. für Claude Desktop) – siehe [README_MCP.md](README_MCP.md).
+- **MCP Server**: `mcp_server.py` exponiert Recherche, Konkurrenzanalyse, Fit-Bewertung und Size Matching als MCP-Tools (z.B. für Claude Desktop) – Setup siehe Dokumentation unten.
+- **Observability**: Detailliertes Agent-Tracing (`logs/agent_trace.log`), Performance-Metriken pro Agent (Laufzeit-Breakdown) sowie Data-Quality-Metriken (Quellen-Glaubwürdigkeit, PDF-Extraktions-Konfidenz, Faktor-Breakdown pro Bewertungskriterium) direkt in der Ergebnis-Ansicht.
+- **PDF-Cache & Error Handling**: Gefundene Geschäftsberichte werden lokal gecacht (30 Tage für PDFs, 60 Tage für extrahierte Kennzahlen), Downloads laufen mit Exponential-Backoff-Retry (1s/2s/4s) und schlagen bei Fehlern graceful fehl, statt die ganze Analyse abzubrechen.
+- **Security**: 70+ Angriffsmuster-Erkennung (Prompt-Injection, Jailbreaks, Instruction-Chaining, Context-Confusion, Obfuskation via Base64/ROT13/Hex/Leetspeak/Cyrillic-Lookalikes, technische Exploits) auf Deutsch und Englisch, zweistufiges Rate Limiting (Session- und IP-basiert) sowie angriffs-spezifisches Banning (Temp-Ban nach 3 Angriffen/Minute, permanenter Block + Admin-Alert nach 20/Stunde).
+- **Health-Check-Endpoint**: Optionaler eigenständiger Monitoring-Server (`src/health_server.py`) für DevOps/Betrieb.
 
 ## Tech-Stack
 
@@ -30,6 +34,8 @@ Sponsor Match ist eine Streamlit-App, die mit einem [LangGraph](https://www.lang
 - **Persistenz**: SQLite (`data/sponsor_match.db` für Analysen, `data/users.db` für Nutzerkonten)
 - **Tracing**: [LangSmith](https://smith.langchain.com/) (optional)
 - **MCP-Server**: [FastMCP](https://github.com/modelcontextprotocol/python-sdk) (`mcp>=1.9,<2`)
+- **PDF-Extraktion**: [pdfplumber](https://github.com/jsvine/pdfplumber) (Text + Tabellen aus Geschäftsberichten)
+- **Tests**: [pytest](https://pytest.org/)
 - **Package-Management**: [uv](https://docs.astral.sh/uv/)
 
 ## Setup
@@ -72,10 +78,16 @@ mcp_server.py                  # FastMCP-Server: Recherche/Konkurrenzanalyse/Fit
 mcp_config.json                # Fertiger Claude-Desktop-Konfigurationseintrag
 src/orchestrator.py            # Manager: LangGraph-Pipeline, SQLite-Persistenz, RAGAs-artiges Eval
 src/search_agent.py            # Spezialist: Web-Recherche, Case-Study-RAG, Sponsorship-DB-Suche
-src/analysis_agent.py          # Spezialist: Sponsoring-Portfolio, Company-Size, Budget-Schätzung
+src/analysis_agent.py          # Spezialist: Sponsoring-Portfolio, Company-Size, Budget-Schätzung, PDF-Extraktion
 src/fit_agent.py                # Spezialist: Fit-Scoring, Outreach-Entwurf, Ablehnungsbegründung
-src/security_validator.py      # Input-Security: 11 Angriffsmuster-Kategorien
+src/security_validator.py      # Input-Security: 70+ Angriffsmuster-Kategorien + Rate Limiting/Banning
+src/logger.py                  # AgentLogger: strukturiertes Tracing + Security-Audit-Log
+src/pdf_cache.py               # PDFCache: Zwei-Stufen-Cache für Geschäftsbericht-PDFs
+src/error_handler.py           # ErrorHandler: Retry mit Exponential Backoff, Graceful Degradation
+src/performance_monitor.py     # PerformanceMonitor: Laufzeit-Tracking pro Agent
+src/health_server.py           # Eigenständiger Health-Check-Server (Monitoring, optional)
 src/tools.py                   # Shared Infra: Tavily-Such-Tool, LLM-Factory, State-Schema, Plugins
+tests/test_security_injection.py  # 122 Security-Tests (Angriffsmuster + Legitim-Input-Fälle)
 data/clubs.json                # Vereinsprofile (Sportart, Fanbase, Werte, Size, ...)
 data/case_studies.json         # Fiktive Case-Study-Wissensbasis
 data/sponsorship_database.json # Fiktive externe Sponsorship-Datenbank
@@ -83,7 +95,15 @@ data/available_plugins.json    # Plugin-Konfiguration (an/aus, Pflicht-Plugins)
 .streamlit/config.toml         # Farbschema (Dark Mode)
 ```
 
-`data/sponsor_match.db`, `data/users.db`, `data/feedback.jsonl`, `data/security_log.jsonl` und `logs/` werden zur Laufzeit erzeugt und sind bewusst nicht Teil des Repos (siehe `.gitignore`).
+`data/sponsor_match.db`, `data/users.db`, `data/feedback.jsonl`, `data/security_log.jsonl`, `data/admin_alerts.jsonl`, `data/pdf_cache/` und `logs/` werden zur Laufzeit erzeugt und sind bewusst nicht Teil des Repos (siehe `.gitignore`).
+
+## Weitere Dokumentation
+
+- [README_AGENTS.md](README_AGENTS.md) – Agent-Architektur im Detail: Datenfluss, Logging, Caching, Performance, Fehlerbehandlung.
+- [MULTI_AGENT_ARCHITECTURE.md](MULTI_AGENT_ARCHITECTURE.md) – LangGraph-State-Machine, Modul-Abhängigkeiten, vollständiges State-Schema.
+- [QUALITY_METRICS.md](QUALITY_METRICS.md) – Was die Konfidenz-Werte bedeuten und wann man ihnen vertrauen sollte.
+- [DEPLOYMENT.md](DEPLOYMENT.md) – Setup, Monitoring, Performance-Tuning, Troubleshooting.
+- [README_MCP.md](README_MCP.md) – MCP-Server-Einrichtung (z.B. für Claude Desktop).
 
 ## Hinweise
 
