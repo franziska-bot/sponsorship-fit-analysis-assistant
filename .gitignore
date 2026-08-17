@@ -11,4 +11,5 @@ data/sponsor_match.db
 data/feedback.jsonl
 data/security_log.jsonl
 data/evaluation_report.json
+data/pdf_cache/
 logs/

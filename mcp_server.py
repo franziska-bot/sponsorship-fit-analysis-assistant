@@ -1,7 +1,8 @@
 """FastMCP-Server für Sponsor Match.
 
-Exponiert vier zustandslose Kern-Fähigkeiten des Sponsor-Match-Agents (src/agent.py)
-als MCP-Tools, damit sie z.B. aus Claude Desktop heraus aufgerufen werden können:
+Exponiert vier zustandslose Kern-Fähigkeiten der Sponsor-Match-Spezialisten-Agents
+(src/search_agent.py, src/analysis_agent.py, src/fit_agent.py) als MCP-Tools, damit
+sie z.B. aus Claude Desktop heraus aufgerufen werden können:
 
     - research_company   Web-Recherche zur Firma (Tavily + LLM-Zusammenfassung)
     - analyze_competitors Sponsoring-Portfolio-Analyse der Firma selbst
@@ -15,9 +16,9 @@ mcp_config.json). Alternativ per Umgebungsvariable MCP_TRANSPORT=streamable-http
 (oder "sse") als Netzwerk-Server auf MCP_PORT (Default 5000) – z.B. zum
 eigenständigen Testen ohne Claude Desktop.
 
-Kein eigenes .env-Handling nötig: src.agent ruft beim Import bereits
+Kein eigenes .env-Handling nötig: src.tools ruft beim Import bereits
 load_dotenv() auf, TAVILY_API_KEY/OPENROUTER_API_KEY etc. werden also
-transitiv geladen, sobald dieses Modul `from src.agent import ...` ausführt.
+transitiv geladen, sobald dieses Modul einen der src.*-Spezialisten importiert.
 """
 
 import json
@@ -27,7 +28,9 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from src.agent import (
+from src.tools import _get_llm
+from src.search_agent import research_company as _research_company_node
+from src.analysis_agent import (
     _analyze_company_sponsorship_portfolio,
     _build_size_explanation,
     _compute_portfolio_score_impact,
@@ -35,10 +38,10 @@ from src.agent import (
     _compute_size_match_adjustment,
     _compute_size_match_percent,
     _estimate_company_size,
-    _get_llm,
-    evaluate_fit as _evaluate_fit_node,
-    research_company as _research_company_node,
+    analyze_financials as _analyze_financials_node,
 )
+from src.fit_agent import evaluate_fit as _evaluate_fit_node
+from src.security_validator import validate_input
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -77,6 +80,13 @@ def _validate_company_name(company_name: str) -> str:
     company_name = (company_name or "").strip()
     if not company_name:
         raise ValidationError("company_name darf nicht leer sein.")
+    # MCP-Tool-Aufrufe durchlaufen nicht main.py's UI-Validierung (Streamlit-
+    # Formular, Rate-Limiting) – ohne diesen Check würden Angriffsmuster
+    # (Prompt-Injection, SQL-/Command-Injection, ...) hier ungefiltert bis in
+    # die LLM-Prompts/Suchanfragen durchgereicht.
+    is_safe, violations = validate_input(company_name)
+    if not is_safe:
+        raise ValidationError(f"company_name enthält unzulässige Muster: {', '.join(violations)}")
     return company_name
 
 
@@ -166,6 +176,14 @@ def evaluate_fit(company_name: str, club_profile: str) -> dict:
         }
         research_result = _research_company_node(research_state)
 
+        financials_state = {
+            "club_profile": club,
+            "company_name": company_name,
+            "selected_model": DEFAULT_MODEL,
+            "language": DEFAULT_LANGUAGE,
+        }
+        financials_result = _analyze_financials_node(financials_state)
+
         eval_state = {
             "club_profile": club,
             "company_name": company_name,
@@ -173,6 +191,9 @@ def evaluate_fit(company_name: str, club_profile: str) -> dict:
             "selected_model": DEFAULT_MODEL,
             "language": DEFAULT_LANGUAGE,
             "research_findings": research_result["research_findings"],
+            "competitor_analysis": financials_result["competitor_analysis"],
+            "size_compatibility": financials_result["size_compatibility"],
+            "pdf_financials": financials_result.get("pdf_financials", {}),
         }
         result = _evaluate_fit_node(eval_state)
         logger.info("evaluate_fit OK für %r: score=%.2f", company_name, result["fit_score"])

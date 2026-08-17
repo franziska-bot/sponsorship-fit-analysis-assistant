@@ -70,8 +70,12 @@ Die App ist danach unter `http://localhost:8501` erreichbar. Beim ersten Start �
 main.py                        # Streamlit-UI: Auth, Sidebar, Formular, Ergebnis-Karten
 mcp_server.py                  # FastMCP-Server: Recherche/Konkurrenzanalyse/Fit/Size Matching als MCP-Tools
 mcp_config.json                # Fertiger Claude-Desktop-Konfigurationseintrag
-src/agent.py                   # LangGraph-Agent, Scoring-Logik, SQLite-Persistenz, Plugins
-src/tools.py                   # Tavily-Such-Tool
+src/orchestrator.py            # Manager: LangGraph-Pipeline, SQLite-Persistenz, RAGAs-artiges Eval
+src/search_agent.py            # Spezialist: Web-Recherche, Case-Study-RAG, Sponsorship-DB-Suche
+src/analysis_agent.py          # Spezialist: Sponsoring-Portfolio, Company-Size, Budget-Schätzung
+src/fit_agent.py                # Spezialist: Fit-Scoring, Outreach-Entwurf, Ablehnungsbegründung
+src/security_validator.py      # Input-Security: 11 Angriffsmuster-Kategorien
+src/tools.py                   # Shared Infra: Tavily-Such-Tool, LLM-Factory, State-Schema, Plugins
 data/clubs.json                # Vereinsprofile (Sportart, Fanbase, Werte, Size, ...)
 data/case_studies.json         # Fiktive Case-Study-Wissensbasis
 data/sponsorship_database.json # Fiktive externe Sponsorship-Datenbank

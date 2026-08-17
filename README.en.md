@@ -70,8 +70,12 @@ The app is then available at `http://localhost:8501`. On first use, create an ac
 main.py                        # Streamlit UI: auth, sidebar, form, result cards
 mcp_server.py                  # FastMCP server: research/competitor analysis/fit/size matching as MCP tools
 mcp_config.json                # Ready-made Claude Desktop config entry
-src/agent.py                   # LangGraph agent, scoring logic, SQLite persistence, plugins
-src/tools.py                   # Tavily search tool
+src/orchestrator.py            # Manager: LangGraph pipeline, SQLite persistence, RAGAs-style eval
+src/search_agent.py            # Specialist: web research, case-study RAG, sponsorship DB lookup
+src/analysis_agent.py          # Specialist: sponsorship portfolio, company size, budget estimate
+src/fit_agent.py               # Specialist: fit scoring, outreach draft, rejection reason
+src/security_validator.py      # Input security: 11 attack-pattern categories
+src/tools.py                   # Shared infra: Tavily search tool, LLM factory, state schema, plugins
 data/clubs.json                # Club profiles (sport, fanbase, values, size, ...)
 data/case_studies.json         # Fictional case study knowledge base
 data/sponsorship_database.json # Fictional external sponsorship database

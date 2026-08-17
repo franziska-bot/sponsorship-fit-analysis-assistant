@@ -1,7 +1,7 @@
 # Sponsor Match – MCP Server
 
-`mcp_server.py` exponiert vier zustandslose Kern-Fähigkeiten des Sponsor-Match-Agents
-(`src/agent.py`) als [MCP](https://modelcontextprotocol.io/)-Tools, gebaut mit
+`mcp_server.py` exponiert vier zustandslose Kern-Fähigkeiten der Sponsor-Match-Spezialisten-Agents
+(`src/search_agent.py`, `src/analysis_agent.py`, `src/fit_agent.py`) als [MCP](https://modelcontextprotocol.io/)-Tools, gebaut mit
 [FastMCP](https://github.com/modelcontextprotocol/python-sdk) (`mcp.server.fastmcp.FastMCP`).
 
 ## Tools
@@ -39,7 +39,7 @@ uv sync
 ```
 
 `.env` mit `TAVILY_API_KEY` und `OPENROUTER_API_KEY` muss wie für `main.py` vorhanden
-sein – `mcp_server.py` braucht keine eigene Env-Konfiguration, da `src/agent.py`
+sein – `mcp_server.py` braucht keine eigene Env-Konfiguration, da `src/tools.py`
 `load_dotenv()` bereits beim Import ausführt.
 
 ## Standalone starten & testen (ohne Claude Desktop)

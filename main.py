@@ -8,7 +8,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from langchain_core.tracers.context import collect_runs
-from src.agent import (
+from src.orchestrator import (
     app,
     get_langsmith_trace_url,
     get_analysis_history,
@@ -17,7 +17,6 @@ from src.agent import (
     get_resolved_hitl_decisions,
     update_analysis_corrected_score,
     count_score_corrections,
-    compute_agent_confidence,
     get_feedback_confidence,
     evaluate_with_ragas,
     get_score_consistency,
@@ -27,11 +26,13 @@ from src.agent import (
     save_user_settings,
     delete_user_account,
 )
+from src.fit_agent import compute_agent_confidence
+from src.security_validator import validate_input as validate_security_patterns
+from src.security_validator import rate_limit_check
 
 # --- Security Guard: Rate Limiting, Input Validation, Security-Logging ---
 
 SECURITY_LOG_FILE = "data/security_log.jsonl"
-COMPANY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9\s\-\.äöüßÄÖÜ]*$")
 QUESTION_PATTERN = re.compile(r"\?|\bwas\b|\bwer\b|\bwie\b", re.IGNORECASE)
 RATE_LIMIT_SHORT = (10, 5 * 60)      # max. 10 Analysen pro 5 Minuten
 RATE_LIMIT_LONG = (100, 24 * 60 * 60)  # max. 100 Analysen pro 24h
@@ -42,20 +43,18 @@ def looks_like_question(company_name: str) -> bool:
     return bool(QUESTION_PATTERN.search(company_name))
 
 
-def validate_company_input(company_name: str) -> bool:
-    """Min. 2 / Max. 100 Zeichen, nur alphanumerisch + Leerzeichen/-.äöüßÄÖÜ.
+def validate_company_input(company_name: str) -> tuple[bool, list[str]]:
+    """Prüft den Company-Namen gegen 11 Sicherheits-Pattern-Kategorien
+    (src/security_validator.py: Allow-List-Charset, Längen-Grenzen,
+    Prompt-Injection, Jailbreak, SQL-/Command-/Template-Injection, XSS,
+    Path Traversal, Steuerzeichen, Sonderzeichen-Flooding).
 
-    Verhindert, dass beliebiger Text (z.B. Prompt-Injection-Versuche oder
-    SQL-Metazeichen) über das Company-Feld in Prompts/Queries gelangt.
-    Hinweis: unsere DB-Queries sind ohnehin bereits parametrisiert (kein
-    String-Interpolation-Risiko) – diese Validierung ist primär Schutz vor
-    Prompt-Injection und allgemeiner Input-Hygiene, nicht die einzige
-    SQL-Absicherung.
+    Gibt (ist_gültig, verletzte_kategorien) zurück. Unsere DB-Queries sind
+    ohnehin bereits parametrisiert (kein String-Interpolation-Risiko) – diese
+    Validierung ist primär Schutz vor Prompt-Injection und allgemeiner
+    Input-Hygiene, nicht die einzige SQL-Absicherung.
     """
-    stripped = company_name.strip()
-    if not (2 <= len(stripped) <= 100):
-        return False
-    return bool(COMPANY_NAME_PATTERN.fullmatch(company_name))
+    return validate_security_patterns(company_name)
 
 
 def check_rate_limit() -> tuple[bool, float]:
@@ -85,6 +84,16 @@ def check_rate_limit() -> tuple[bool, float]:
 
 def record_request() -> None:
     st.session_state.setdefault("request_timestamps", []).append(time.time())
+
+
+def get_client_ip() -> str:
+    """Ermittelt die Client-IP für den IP-basierten Rate-Limit-Check
+    (src/security_validator.py:rate_limit_check). st.context.ip_address ist
+    laut Streamlit-Doku None bei lokalem Zugriff über localhost – fällt in
+    dem Fall auf einen festen Platzhalter zurück, damit lokale Entwicklung
+    weiterhin konsistent limitiert wird, statt den Check faktisch für jeden
+    localhost-Nutzer zu deaktivieren."""
+    return st.context.ip_address or "localhost"
 
 
 def log_security_event(company_name: str, status: str) -> None:
@@ -423,6 +432,7 @@ LABELS = {
         "warning_is_question": "Das ist eine Frage, keine Firma. Gib einen Firmennamen ein.",
         "warning_invalid_company": "Ungültiger Firmenname. Nur alphanumerische Zeichen erlaubt.",
         "warning_rate_limit": "Rate-Limit erreicht. Versuche es in {minutes:.0f} Minuten erneut.",
+        "warning_ip_rate_limit": "IP-Rate-Limit überschritten",
         "developer_settings_header": "Developer Settings",
         "developer_settings_help": "Erweiterte Einstellungen wie Modellwahl – für Poweruser gedacht.",
         "plugin_manager_header": "Plugin Manager",
@@ -508,6 +518,30 @@ LABELS = {
         "tokens_help": "Zeigt verbrauchte Tokens und geschätzte Kosten dieser Analyse.",
         "total_tokens": "Gesamt Tokens",
         "estimated_cost": "Geschätzte Kosten",
+        "performance_header": "Performance",
+        "performance_help": "Laufzeit-Aufschlüsselung pro Agent für diese Analyse.",
+        "performance_total": "Gesamtzeit",
+        "performance_search": "SearchAgent",
+        "performance_analysis": "AnalysisAgent",
+        "performance_fit": "FitAgent",
+        "quality_header": "📊 Data-Quality-Metriken",
+        "quality_help": "Wie verlässlich sind die Recherche- und Finanzdaten dieser Analyse?",
+        "quality_sources_found": "Gefundene Quellen",
+        "quality_avg_credibility": "Ø Glaubwürdigkeit",
+        "quality_pdfs_parsed": "PDFs geparst",
+        "quality_metrics_found": "Kennzahlen gefunden",
+        "quality_research_quality": "Recherche-Qualität",
+        "quality_financial_quality": "Finanzdaten-Qualität",
+        "quality_sentiment": "Sentiment-Score",
+        "quality_metrics_missing": "Fehlende Kennzahlen",
+        "quality_factors_header": "**Konfidenz je Bewertungsfaktor**",
+        "quality_factors_unavailable": "Kein Faktor-Breakdown verfügbar (Score aus Cache übernommen).",
+        "quality_tooltip_high": "Hohe Konfidenz: mehrere übereinstimmende Quellen, aktuelle Daten, offizielle Quellen.",
+        "quality_tooltip_medium": "Mittlere Konfidenz: einige Kennzahlen fehlen, ältere Daten.",
+        "quality_tooltip_low": "Niedrige Konfidenz: sehr wenige Quellen, widersprüchliche Daten.",
+        "quality_label_high": "hoch",
+        "quality_label_medium": "mittel",
+        "quality_label_low": "niedrig",
         "details_expander": "Details pro Schritt",
         "model_caption": "Modell: {model}",
         "feedback_question": "War diese Analyse hilfreich?",
@@ -629,6 +663,7 @@ LABELS = {
         "warning_is_question": "That's a question, not a company. Please enter a company name.",
         "warning_invalid_company": "Invalid company name. Only alphanumeric characters allowed.",
         "warning_rate_limit": "Rate limit exceeded. Try again in {minutes:.0f} minutes.",
+        "warning_ip_rate_limit": "IP rate limit exceeded",
         "developer_settings_header": "Developer Settings",
         "developer_settings_help": "Advanced settings like model choice – for power users.",
         "plugin_manager_header": "Plugin Manager",
@@ -714,6 +749,30 @@ LABELS = {
         "tokens_help": "Shows tokens consumed and estimated cost of this analysis.",
         "total_tokens": "Total Tokens",
         "estimated_cost": "Estimated Cost",
+        "performance_header": "Performance",
+        "performance_help": "Timing breakdown per agent for this analysis.",
+        "performance_total": "Total Time",
+        "performance_search": "SearchAgent",
+        "performance_analysis": "AnalysisAgent",
+        "performance_fit": "FitAgent",
+        "quality_header": "📊 Data Quality Metrics",
+        "quality_help": "How reliable is the research and financial data behind this analysis?",
+        "quality_sources_found": "Sources Found",
+        "quality_avg_credibility": "Avg Credibility",
+        "quality_pdfs_parsed": "PDFs Parsed",
+        "quality_metrics_found": "Metrics Found",
+        "quality_research_quality": "Research Quality",
+        "quality_financial_quality": "Financial Data Quality",
+        "quality_sentiment": "Sentiment Score",
+        "quality_metrics_missing": "Metrics Missing",
+        "quality_factors_header": "**Evaluation Factor Confidence**",
+        "quality_factors_unavailable": "No factor breakdown available (score reused from cache).",
+        "quality_tooltip_high": "High confidence: multiple sources agree, recent data, official sources.",
+        "quality_tooltip_medium": "Medium confidence: some metrics missing, older data.",
+        "quality_tooltip_low": "Low confidence: very few sources, contradictory data.",
+        "quality_label_high": "high",
+        "quality_label_medium": "medium",
+        "quality_label_low": "low",
         "details_expander": "Details per step",
         "model_caption": "Model: {model}",
         "feedback_question": "Was this analysis helpful?",
@@ -835,6 +894,7 @@ LABELS = {
         "warning_is_question": "Ceci est une question, pas une entreprise. Veuillez saisir un nom d'entreprise.",
         "warning_invalid_company": "Nom d'entreprise invalide. Seuls les caractères alphanumériques sont autorisés.",
         "warning_rate_limit": "Limite de requêtes atteinte. Réessayez dans {minutes:.0f} minutes.",
+        "warning_ip_rate_limit": "Limite de débit IP dépassée",
         "developer_settings_header": "Paramètres développeur",
         "developer_settings_help": "Paramètres avancés comme le choix du modèle – pour utilisateurs avancés.",
         "plugin_manager_header": "Gestionnaire de plugins",
@@ -920,6 +980,30 @@ LABELS = {
         "tokens_help": "Montre les tokens consommés et le coût estimé de cette analyse.",
         "total_tokens": "Total des tokens",
         "estimated_cost": "Coût estimé",
+        "performance_header": "Performance",
+        "performance_help": "Répartition du temps d'exécution par agent pour cette analyse.",
+        "performance_total": "Temps total",
+        "performance_search": "SearchAgent",
+        "performance_analysis": "AnalysisAgent",
+        "performance_fit": "FitAgent",
+        "quality_header": "📊 Indicateurs de qualité des données",
+        "quality_help": "Quelle est la fiabilité des données de recherche et financières de cette analyse ?",
+        "quality_sources_found": "Sources trouvées",
+        "quality_avg_credibility": "Crédibilité moy.",
+        "quality_pdfs_parsed": "PDF analysés",
+        "quality_metrics_found": "Indicateurs trouvés",
+        "quality_research_quality": "Qualité de la recherche",
+        "quality_financial_quality": "Qualité des données financières",
+        "quality_sentiment": "Score de sentiment",
+        "quality_metrics_missing": "Indicateurs manquants",
+        "quality_factors_header": "**Confiance par facteur d'évaluation**",
+        "quality_factors_unavailable": "Aucune répartition par facteur disponible (score réutilisé du cache).",
+        "quality_tooltip_high": "Confiance élevée : plusieurs sources concordantes, données récentes, sources officielles.",
+        "quality_tooltip_medium": "Confiance moyenne : certains indicateurs manquants, données plus anciennes.",
+        "quality_tooltip_low": "Confiance faible : très peu de sources, données contradictoires.",
+        "quality_label_high": "élevée",
+        "quality_label_medium": "moyenne",
+        "quality_label_low": "faible",
         "details_expander": "Détails par étape",
         "model_caption": "Modèle : {model}",
         "feedback_question": "Cette analyse vous a-t-elle été utile ?",
@@ -1665,17 +1749,22 @@ with st.container(key="card_form", border=True):
 
     if st.button(labels["start_button"], type="primary"):
         rate_limit_ok, rate_limit_wait_minutes = check_rate_limit()
+        ip_rate_limit_ok, ip_rate_limit_error = rate_limit_check(get_client_ip())
+        company_input_valid, company_input_violations = validate_company_input(company_name)
 
         if not company_name.strip():
             st.warning(labels["warning_no_company"])
         elif looks_like_question(company_name):
             st.warning(labels["warning_is_question"])
-        elif not validate_company_input(company_name):
+        elif not company_input_valid:
             st.warning(labels["warning_invalid_company"])
-            log_security_event(company_name, "blocked_invalid_input")
+            log_security_event(company_name, f"blocked_invalid_input:{','.join(company_input_violations)}")
         elif not rate_limit_ok:
             st.warning(labels["warning_rate_limit"].format(minutes=rate_limit_wait_minutes))
             log_security_event(company_name, "blocked_rate_limit")
+        elif not ip_rate_limit_ok:
+            st.error(f"{labels['warning_ip_rate_limit']}: {ip_rate_limit_error}")
+            log_security_event(company_name, f"blocked_ip_rate_limit:{ip_rate_limit_error}")
         else:
             record_request()
             log_security_event(company_name, "success")
@@ -1692,6 +1781,7 @@ with st.container(key="card_form", border=True):
                         "selected_model": selected_model,
                         "language": language,
                         "research_findings": "",
+                        "research_quality": {},
                         "fit_score": 0.0,
                         "fit_reasoning": "",
                         "outreach_draft": "",
@@ -1701,12 +1791,16 @@ with st.container(key="card_form", border=True):
                         "competitor_analysis": {},
                         "budget_estimate": "",
                         "size_compatibility": {},
+                        "pdf_financials": {},
+                        "financial_data": {},
                         "analysis_id": 0,
                         "learning_applied": False,
                         "is_uncertain": False,
                         "agent_confidence": 0,
+                        "fit_agent_factors": {},
                         "hitl_resolved_count": 0,
                         "token_usage": [],
+                        "performance_metrics": {},
                     })
                 run_id = run_collector.traced_runs[0].id if run_collector.traced_runs else None
 
@@ -2031,6 +2125,72 @@ if "result" in st.session_state:
                         f"(Input: {entry['input_tokens']}, Output: {entry['output_tokens']}) "
                         f"– ${entry_cost:.4f}"
                     )
+
+    with st.container(key="card_performance", border=True):
+        with st.expander(result_labels["performance_header"], expanded=False):
+            metrics = result.get("performance_metrics", {})
+            st.caption(result_labels["performance_help"])
+            perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+            perf_col1.metric(result_labels["performance_total"], f"{metrics.get('total_time', 0):.0f}ms")
+            perf_col2.metric(result_labels["performance_search"], f"{metrics.get('search_agent_avg', 0):.0f}ms")
+            perf_col3.metric(result_labels["performance_analysis"], f"{metrics.get('analysis_agent_avg', 0):.0f}ms")
+            perf_col4.metric(result_labels["performance_fit"], f"{metrics.get('fit_agent_avg', 0):.0f}ms")
+
+    with st.container(key="card_quality", border=True):
+        with st.expander(result_labels["quality_header"], expanded=False):
+            st.caption(result_labels["quality_help"])
+            research_quality = result.get("research_quality", {})
+            financial_data = result.get("financial_data", {})
+
+            quality_tooltips = {
+                "high": result_labels["quality_tooltip_high"],
+                "medium": result_labels["quality_tooltip_medium"],
+                "low": result_labels["quality_tooltip_low"],
+            }
+            quality_labels = {
+                "high": result_labels["quality_label_high"],
+                "medium": result_labels["quality_label_medium"],
+                "low": result_labels["quality_label_low"],
+            }
+
+            q_col1, q_col2, q_col3 = st.columns(3)
+            with q_col1:
+                st.metric(result_labels["quality_sources_found"], research_quality.get("sources_found", 0))
+                st.metric(
+                    result_labels["quality_avg_credibility"],
+                    f"{research_quality.get('average_credibility', 0):.0%}",
+                )
+            with q_col2:
+                st.metric(
+                    result_labels["quality_pdfs_parsed"],
+                    f"{financial_data.get('pdfs_successfully_parsed', 0)}/{financial_data.get('pdfs_found', 0)}",
+                )
+                st.metric(result_labels["quality_metrics_found"], len(financial_data.get("metrics_extracted", [])))
+            with q_col3:
+                research_tier = research_quality.get("data_quality", "low")
+                financial_tier = financial_data.get("data_quality", "low")
+                st.metric(
+                    result_labels["quality_research_quality"],
+                    quality_labels.get(research_tier, research_tier),
+                    help=quality_tooltips.get(research_tier),
+                )
+                st.metric(
+                    result_labels["quality_financial_quality"],
+                    quality_labels.get(financial_tier, financial_tier),
+                    help=quality_tooltips.get(financial_tier),
+                )
+
+            metrics_missing = financial_data.get("metrics_missing", [])
+            if metrics_missing:
+                st.caption(f"{result_labels['quality_metrics_missing']}: {', '.join(metrics_missing)}")
+
+            st.write(result_labels["quality_factors_header"])
+            factors = result.get("fit_agent_factors", {})
+            if factors:
+                for factor, confidence in factors.items():
+                    st.progress(confidence, text=f"{factor}: {confidence:.0%}")
+            else:
+                st.caption(result_labels["quality_factors_unavailable"])
 
     with st.container(key="card_feedback", border=True):
         render_card_title(result_labels["feedback_question"])
