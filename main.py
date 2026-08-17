@@ -28,7 +28,7 @@ from src.orchestrator import (
 )
 from src.fit_agent import compute_agent_confidence
 from src.security_validator import validate_input as validate_security_patterns
-from src.security_validator import rate_limit_check
+from src.security_validator import rate_limit_check, check_attack_block, log_and_record_attack
 
 # --- Security Guard: Rate Limiting, Input Validation, Security-Logging ---
 
@@ -44,10 +44,14 @@ def looks_like_question(company_name: str) -> bool:
 
 
 def validate_company_input(company_name: str) -> tuple[bool, list[str]]:
-    """Prüft den Company-Namen gegen 11 Sicherheits-Pattern-Kategorien
-    (src/security_validator.py: Allow-List-Charset, Längen-Grenzen,
-    Prompt-Injection, Jailbreak, SQL-/Command-/Template-Injection, XSS,
-    Path Traversal, Steuerzeichen, Sonderzeichen-Flooding).
+    """Prüft den Company-Namen gegen das volle Angriffsmuster-Set in
+    src/security_validator.py: Allow-List-Charset, Längen-Grenzen, die
+    ursprünglichen 9 Kategorien (Prompt-Injection, Jailbreak, SQL-/Command-/
+    Template-Injection, XSS, Path Traversal, Steuerzeichen,
+    Sonderzeichen-Flooding) sowie das Security-Update mit 70+ Mustern für
+    Englisch/Deutsch (System-Prompt-Extraction, Role-Override, Instruction-
+    Chaining, Context-Confusion), Obfuskation (Base64/ROT13/Hex/Leetspeak/
+    Cyrillic-Lookalikes), technische Exploits und Zero-Width-/Bidi-Zeichen.
 
     Gibt (ist_gültig, verletzte_kategorien) zurück. Unsere DB-Queries sind
     ohnehin bereits parametrisiert (kein String-Interpolation-Risiko) – diese
@@ -1748,16 +1752,26 @@ with st.container(key="card_form", border=True):
     st.info(labels["company_hint"])
 
     if st.button(labels["start_button"], type="primary"):
+        client_ip = get_client_ip()
+        is_attack_blocked, attack_block_message = check_attack_block(client_ip)
         rate_limit_ok, rate_limit_wait_minutes = check_rate_limit()
-        ip_rate_limit_ok, ip_rate_limit_error = rate_limit_check(get_client_ip())
+        ip_rate_limit_ok, ip_rate_limit_error = rate_limit_check(client_ip)
         company_input_valid, company_input_violations = validate_company_input(company_name)
 
-        if not company_name.strip():
+        if is_attack_blocked:
+            # Bewusst VOR jeder anderen Prüfung: eine bereits gebannte/geblockte
+            # IP (src/security_validator.py:check_attack_block, Security Update)
+            # soll gar nicht erst gegen die übrigen ~90 Angriffsmuster geprüft
+            # werden – der Ban selbst ist die Antwort.
+            st.error(attack_block_message)
+            log_security_event(company_name, f"blocked_attack_ban:{attack_block_message}")
+        elif not company_name.strip():
             st.warning(labels["warning_no_company"])
         elif looks_like_question(company_name):
             st.warning(labels["warning_is_question"])
         elif not company_input_valid:
-            st.warning(labels["warning_invalid_company"])
+            attack_message = log_and_record_attack(client_ip, company_input_violations, company_name)
+            st.warning(attack_message or labels["warning_invalid_company"])
             log_security_event(company_name, f"blocked_invalid_input:{','.join(company_input_violations)}")
         elif not rate_limit_ok:
             st.warning(labels["warning_rate_limit"].format(minutes=rate_limit_wait_minutes))

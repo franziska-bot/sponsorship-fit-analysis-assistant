@@ -78,3 +78,12 @@ class AgentLogger:
         if error_type:
             context = {"error_type": error_type, **context}
         self.logger.error(f"ERROR {task}: {error}{self._format_context(context)}")
+
+    def log_attack_attempt(self, attack_type: str, input_text: str, ip_address: str) -> None:
+        """Security audit trail entry for a detected attack attempt
+        (src/security_validator.py). Always logged at ERROR level — never
+        DEBUG-only — so it's never silently lost to the file-only debug
+        stream; still lands in the same logs/agent_trace.log as everything
+        else, filterable by the 'ATTACK' prefix. input_text is truncated to
+        200 chars so a single crafted payload can't bloat the log."""
+        self.logger.error(f"ATTACK type={attack_type} ip={ip_address} input={input_text[:200]!r}")

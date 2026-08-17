@@ -658,7 +658,7 @@ from src.search_agent import research_company
 from src.analysis_agent import analyze_financials
 from src.fit_agent import evaluate_fit, draft_outreach, explain_rejection, route_by_fit
 from src.performance_monitor import PerformanceMonitor
-from src.security_validator import validate_input
+from src.security_validator import validate_input, validate_club_profile_values
 
 # Graph-Node -> Performance-Bucket: draft_outreach/explain_rejection laufen
 # beide in fit_agent.py (wie evaluate_fit) und zählen daher ebenfalls auf
@@ -728,6 +728,17 @@ class OrchestratingAgent:
         if not is_safe:
             _logger.log_error("pipeline", f"security validation failed: {violations}", company=company_name)
             raise SecurityValidationError(violations)
+
+        # Security Update: Club-Profile kommen aktuell nur aus der statischen
+        # data/clubs.json (nie aus Nutzereingabe), landen aber direkt in
+        # LLM-Prompts (fit_agent.py) – reine Vorsorge für den Fall, dass
+        # Club-Profile künftig einmal editierbar werden.
+        club_is_safe, club_violations = validate_club_profile_values(state["club_profile"])
+        if not club_is_safe:
+            _logger.log_error(
+                "pipeline", f"club profile security validation failed: {club_violations}", company=company_name
+            )
+            raise SecurityValidationError(club_violations)
 
         # .stream(stream_mode="updates") statt .invoke(): liefert nach jedem
         # Node nur dessen eigenen Delta-Output (nicht den kompletten State),
