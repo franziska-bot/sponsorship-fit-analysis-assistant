@@ -4,6 +4,16 @@
 
 Sponsor Match is a Streamlit app that uses a [LangGraph](https://www.langchain.com/langgraph) agent to evaluate how well a company fits as a sponsor for a sports club. The agent researches the company on the web, compares it against the club's profile, and returns a fit score (0.0–1.0) with reasoning, plus either a draft outreach message or a rejection explanation depending on the result.
 
+⚠️ **Showcase**: [Project link coming soon](#) *(TODO: add after uploading to [showcase.turingcollege.com](https://showcase.turingcollege.com/))*
+
+## Problem & solution
+
+**Situation:** Sports clubs rely on sponsorship for part of their budget. Before a club even approaches a company, someone has to judge whether that company is a good fit as a sponsor — values, audience, budget, sport relevance.
+
+**Complication:** That judgment needs research across several independent dimensions — the company's public reputation, its financial capacity (often buried in annual reports), whether it's already saturated with sponsorships in that sport, how well its audience matches the fanbase. Doing this by hand is slow, inconsistent (different people weigh these factors differently), and usually ends in an unexplained gut call — with no way to later trace why a company was rated a good or bad fit, or how confident that rating actually was.
+
+**Resolution:** Sponsor Match automates this vetting with a multi-stage LangGraph pipeline of three specialist agents (research, financial analysis, fit evaluation): parallel web research with source-credibility scoring, real financial-metric extraction from annual reports found online, a transparent 8-factor weighted evaluation instead of a single black-box number, and explicit data-quality/confidence metrics so it's clear when to trust the result versus do more manual digging. A human-in-the-loop step for uncertain cases and a learning loop from past feedback turn a one-off gut feeling into a traceable, continuously improving process.
+
 ## Features
 
 - **Research & fit evaluation**: web research on the company (Tavily), LLM-based scoring with pros/cons bullet points and a recommendation.

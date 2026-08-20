@@ -4,6 +4,16 @@
 
 Sponsor Match ist eine Streamlit-App, die mit einem [LangGraph](https://www.langchain.com/langgraph)-Agenten bewertet, wie gut eine Firma als Sponsor zu einem Sportverein passt. Der Agent recherchiert die Firma im Web, vergleicht sie mit dem Vereinsprofil und liefert einen Fit-Score (0.0–1.0) mit Begründung, sowie je nach Ergebnis einen Ansprache-Entwurf oder eine Ablehnungsbegründung.
 
+⚠️ **Showcase**: [Projekt-Link folgt](#) *(TODO: nach Upload auf [showcase.turingcollege.com](https://showcase.turingcollege.com/) ergänzen)*
+
+## Problem & Lösung
+
+**Situation:** Sportvereine sind für einen Teil ihres Budgets auf Sponsoring angewiesen. Bevor ein Verein eine Firma überhaupt anspricht, muss jemand einschätzen, ob die Firma als Sponsor passt – Werte, Zielgruppe, Budget, Sportart-Relevanz.
+
+**Complication:** Diese Einschätzung erfordert Recherche über mehrere unabhängige Dimensionen hinweg – öffentliche Wahrnehmung der Firma, ihre finanzielle Kapazität (oft nur in Geschäftsberichten vergraben), ob sie bereits in dieser Sportart übersättigt ist, wie gut ihre Zielgruppe zur Fanbase passt. Von Hand ist das langsam, uneinheitlich (unterschiedliche Personen gewichten unterschiedlich) und liefert am Ende oft nur ein unbegründetes Bauchgefühl – ohne dass jemand später nachvollziehen kann, warum eine Firma als guter oder schlechter Fit eingestuft wurde, oder wie sicher diese Einschätzung überhaupt war.
+
+**Resolution:** Sponsor Match automatisiert diese Vorprüfung mit einer mehrstufigen LangGraph-Pipeline aus drei spezialisierten Agenten (Recherche, Finanzanalyse, Fit-Bewertung): parallele Web-Recherche mit Quellen-Glaubwürdigkeits-Scoring, echte Finanzkennzahlen-Extraktion aus online gefundenen Geschäftsberichten, eine transparente 8-Faktor-gewichtete Bewertung statt einer einzelnen Blackbox-Zahl, sowie explizite Data-Quality- und Konfidenz-Metriken, damit klar ist, wann man dem Ergebnis vertrauen kann und wann manuelle Nachrecherche nötig ist. Ein Human-in-the-Loop-Schritt für unsichere Fälle und ein Lern-Loop aus früherem Feedback machen aus einem einmaligen Bauchgefühl einen nachvollziehbaren, sich verbessernden Prozess.
+
 ## Features
 
 - **Recherche & Fit-Bewertung**: Web-Recherche zur Firma (Tavily), LLM-basierte Bewertung mit Score, Pro-/Contra-Stichpunkten und einer Empfehlung.
